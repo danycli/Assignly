@@ -37,6 +37,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Assignment
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material.icons.filled.Visibility
@@ -1035,11 +1036,12 @@ fun LoginScreen(isLoading: Boolean, onLogin: (String, String) -> Unit) {
                     .shadow(8.dp, shape = CircleShape),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Assignment,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(60.dp)
+                Image(
+                    painter = painterResource(id = R.mipmap.ic_launcher_foreground),
+                    contentDescription = "App logo",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize()
                 )
             }
 
@@ -1188,41 +1190,54 @@ fun LoginScreen(isLoading: Boolean, onLogin: (String, String) -> Unit) {
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .shadow(2.dp, shape = RoundedCornerShape(14.dp)),
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = Cyprus.copy(alpha = 0.08f)),
-                border = BorderStroke(1.dp, Cyprus.copy(alpha = 0.3f))
+                    .shadow(3.dp, shape = RoundedCornerShape(16.dp)),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFF3F0ED))
             ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
+                    Box(
+                        modifier = Modifier
+                            .size(20.dp)
+                            .clip(CircleShape)
+                            .background(Cyprus),
+                        contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Download,
+                            imageVector = Icons.Default.Info,
                             contentDescription = null,
-                            tint = Cyprus,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Registration Number Format: ",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Cyprus
+                            tint = Color.White,
+                            modifier = Modifier.size(13.dp)
                         )
                     }
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "Session-Program-RollNo (e.g., SP25-BCS-001)",
-                        fontSize = 11.sp,
-                        color = Color.Black.copy(alpha = 0.6f),
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier.align(Alignment.Start)
-                    )
+
+                    Spacer(modifier = Modifier.width(10.dp))
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Registration Format",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Cyprus
+                        )
+                        Text(
+                            text = "Session-Program-RollNo",
+                            fontSize = 13.sp,
+                            color = Color.Black.copy(alpha = 0.5f),
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "e.g. SP25-BCS-001",
+                            fontSize = 12.sp,
+                            color = Color.Black.copy(alpha = 0.45f),
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
                 }
             }
 

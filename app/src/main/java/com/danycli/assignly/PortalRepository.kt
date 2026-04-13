@@ -1456,6 +1456,7 @@ class PortalRepository {
             
             // Search for any visible text that might be an error or validation message
             val doc2 = Jsoup.parse(responseHtml)
+            val visibleValidationMessages = mutableListOf<String>()
             
             // Look for spans/divs with "RequiredFieldValidator" or validation class
             val validatorSpans = doc2.select("[id*='Validator']")
@@ -1465,6 +1466,7 @@ class PortalRepository {
                     val text = elem.text()
                     if (text.isNotEmpty()) {
                         Log.d("PortalAuth", "  Validator text: $text")
+                        visibleValidationMessages.add(text)
                     }
                 }
             }
@@ -1477,6 +1479,7 @@ class PortalRepository {
                     val text = elem.text()
                     if (text.isNotEmpty()) {
                         Log.d("PortalAuth", "  Error div: $text")
+                        visibleValidationMessages.add(text)
                     }
                 }
             }
@@ -1487,6 +1490,7 @@ class PortalRepository {
                 val text = elem.text()
                 if (text.isNotEmpty()) {
                     Log.d("PortalAuth", "  Summary control: $text")
+                    visibleValidationMessages.add(text)
                 }
             }
             
@@ -1507,22 +1511,31 @@ class PortalRepository {
             
             val hasViewstate = responseHtml.contains("__VIEWSTATE", ignoreCase = true)
             val hasForm = responseHtml.contains("<form", ignoreCase = true)
-            
-            // Check for actual errors
-            val hasError = responseHtml.contains("error", ignoreCase = true) && 
-                          (responseHtml.contains("notification error", ignoreCase = true) ||
-                           responseHtml.contains("invalid file", ignoreCase = true))
+            val normalizedValidationText = visibleValidationMessages
+                .joinToString(" | ")
+                .lowercase()
+                .replace(Regex("\\s+"), " ")
+
+            // Check only visible validation messages to avoid false rejects from static page hints.
+            val hasFormatError = normalizedValidationText.contains("only .zip,.rar,.doc,.docx and .pdf allowed")
+            val hasMissingFileError = normalizedValidationText.contains("required") &&
+                (normalizedValidationText.contains("fileuploadvalidator") || normalizedValidationText.contains("file"))
+            val hasInvalidFileError = normalizedValidationText.contains("invalid file")
+            val hasSizeError = normalizedValidationText.contains("maximum") && normalizedValidationText.contains("size")
+            val hasClosedError = normalizedValidationText.contains("closed") && normalizedValidationText.contains("assignment")
+
+            val hasError = hasFormatError || hasMissingFileError || hasInvalidFileError || hasSizeError || hasClosedError
 
             val rejectionReason = when {
-                responseHtml.contains("only .zip,.rar,.doc,.docx and .pdf allowed", true) ->
+                hasFormatError ->
                     "Upload rejected: only .zip, .rar, .doc, .docx, .pdf are allowed."
-                responseHtml.contains("required", true) && responseHtml.contains("fileuploadvalidator", true) ->
+                hasMissingFileError ->
                     "Upload rejected: file missing or form not accepted."
-                responseHtml.contains("invalid file", true) ->
+                hasInvalidFileError ->
                     "Upload rejected: invalid file."
-                responseHtml.contains("maximum", true) && responseHtml.contains("size", true) ->
+                hasSizeError ->
                     "Upload rejected: file too large."
-                responseHtml.contains("closed", true) && responseHtml.contains("assignment", true) ->
+                hasClosedError ->
                     "Upload rejected: assignment is closed."
                 else -> "Upload rejected by server."
             }
