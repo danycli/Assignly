@@ -16,10 +16,12 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -44,6 +46,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Assignment
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
@@ -51,6 +54,7 @@ import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,12 +68,14 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.danycli.assignmentchecker.ui.theme.AssignmentCheckerTheme
@@ -80,13 +86,27 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONException
 import java.io.File
 import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.io.IOException
+
+private const val DISCLAIMER_URL = "https://github.com/danycli/Assignly#disclaimer"
+private const val RELEASES_API_URL = "https://api.github.com/repos/danycli/Assignly/releases"
+private const val RELEASES_FALLBACK_URL = "https://github.com/danycli/Assignly/releases/tag/Android_Application"
+
+private data class AppUpdateInfo(
+    val latestVersion: String,
+    val releaseUrl: String
+)
 
 class MainActivity : ComponentActivity() {
     private val repository = PortalRepository()
@@ -260,6 +280,89 @@ private fun mapLoginErrorToMessage(message: String?): String {
     }
 }
 
+private fun extractVersionToken(value: String?): String? {
+    if (value.isNullOrBlank()) return null
+    val withPrefix = Regex("(?i)\\bv(\\d+(?:\\.\\d+)*)\\b").find(value)?.groupValues?.getOrNull(1)
+    if (!withPrefix.isNullOrBlank()) return withPrefix
+    return Regex("\\b(\\d+(?:\\.\\d+)*)\\b").find(value)?.groupValues?.getOrNull(1)
+}
+
+private fun compareVersionTokens(left: String, right: String): Int {
+    val leftParts = left.split(".").map { it.toIntOrNull() ?: 0 }
+    val rightParts = right.split(".").map { it.toIntOrNull() ?: 0 }
+    val max = maxOf(leftParts.size, rightParts.size)
+    for (index in 0 until max) {
+        val l = leftParts.getOrElse(index) { 0 }
+        val r = rightParts.getOrElse(index) { 0 }
+        if (l != r) return l.compareTo(r)
+    }
+    return 0
+}
+
+private fun isRemoteVersionNewer(localVersionName: String, remoteVersion: String): Boolean {
+    val localToken = extractVersionToken(localVersionName) ?: return false
+    val remoteToken = extractVersionToken(remoteVersion) ?: return false
+    return compareVersionTokens(remoteToken, localToken) > 0
+}
+
+private fun parseLatestReleaseInfo(json: String): AppUpdateInfo? {
+    return try {
+        val releases = JSONArray(json)
+        var bestVersion: String? = null
+        var bestUrl: String? = null
+
+        for (index in 0 until releases.length()) {
+            val release = releases.optJSONObject(index) ?: continue
+            if (release.optBoolean("draft", false) || release.optBoolean("prerelease", false)) continue
+
+            val tagName = release.optString("tag_name")
+            val releaseName = release.optString("name")
+            val parsedVersion = extractVersionToken(tagName) ?: extractVersionToken(releaseName) ?: continue
+            val releaseUrl = release.optString("html_url").ifBlank { RELEASES_FALLBACK_URL }
+
+            if (bestVersion == null || compareVersionTokens(parsedVersion, bestVersion) > 0) {
+                bestVersion = parsedVersion
+                bestUrl = releaseUrl
+            }
+        }
+
+        if (bestVersion == null) null else AppUpdateInfo(
+            latestVersion = bestVersion,
+            releaseUrl = bestUrl ?: RELEASES_FALLBACK_URL
+        )
+    } catch (e: JSONException) {
+        Log.e("MainActivity", "Failed to parse releases API response: ${e.message}", e)
+        null
+    }
+}
+
+private fun fetchAppUpdateInfo(): AppUpdateInfo? {
+    var connection: HttpURLConnection? = null
+    return try {
+        connection = (URL(RELEASES_API_URL).openConnection() as? HttpURLConnection)
+            ?: return null
+        connection.requestMethod = "GET"
+        connection.connectTimeout = 7_000
+        connection.readTimeout = 7_000
+        connection.instanceFollowRedirects = true
+        connection.setRequestProperty("Accept", "application/vnd.github+json")
+        connection.setRequestProperty("User-Agent", "Assignly-Android-App")
+
+        if (connection.responseCode !in 200..299) {
+            Log.w("MainActivity", "Update check failed: HTTP ${connection.responseCode}")
+            return null
+        }
+
+        val payload = connection.inputStream.bufferedReader().use { it.readText() }
+        parseLatestReleaseInfo(payload)
+    } catch (e: Exception) {
+        Log.e("MainActivity", "Update check failed: ${e.message}", e)
+        null
+    } finally {
+        connection?.disconnect()
+    }
+}
+
 private suspend fun loadAssignmentsAndProfile(repository: PortalRepository): Triple<List<Assignment>, List<Assignment>, ByteArray?> {
     return withContext(Dispatchers.IO) {
         val (pending, submitted) = repository.fetchAssignments()
@@ -327,6 +430,10 @@ enum class ScreenType {
     PENDING, HISTORICAL
 }
 
+private enum class AppPage {
+    LOGIN, PENDING, HISTORICAL
+}
+
 @Composable
 fun MainScreen(
     repository: PortalRepository,
@@ -347,8 +454,66 @@ fun MainScreen(
     var selectedInstructionFile by remember { mutableStateOf<InstructionFile?>(null) }
     var pendingCaptchaCredentials by remember { mutableStateOf<Pair<String, String>?>(null) }
     var showCaptchaDialog by remember { mutableStateOf(false) }
+    var shownUpdateVersion by remember { mutableStateOf<String?>(null) }
+    var updateDialogInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
+    var pendingExitConfirmation by remember { mutableStateOf(false) }
+    var isPendingRefreshing by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
     val scope = rememberCoroutineScope()
+    val pageForUi = when {
+        !isLoggedIn -> AppPage.LOGIN
+        currentScreen == ScreenType.HISTORICAL -> AppPage.HISTORICAL
+        else -> AppPage.PENDING
+    }
+
+    suspend fun refreshAssignmentsState() {
+        val (pending, submitted, photoBytes) = loadAssignmentsAndProfile(repository)
+        assignments = pending
+        historicalAssignments = submitted
+        loggedInStudentName = repository.getCurrentStudentName()
+        loggedInStudentPhoto = photoBytes
+        welcomeStatusMessage = generateWelcomeStatusMessage(
+            pendingCount = pending.size,
+            submittedCount = submitted.size,
+            previousMessage = welcomeStatusMessage
+        )
+    }
+
+    suspend fun checkForAppUpdateIfNeeded() {
+        val localVersion = com.danycli.assignmentchecker.BuildConfig.VERSION_NAME
+        val remoteInfo = withContext(Dispatchers.IO) { fetchAppUpdateInfo() } ?: return
+        if (shownUpdateVersion == remoteInfo.latestVersion) return
+        if (isRemoteVersionNewer(localVersion, remoteInfo.latestVersion)) {
+            updateDialogInfo = remoteInfo
+            shownUpdateVersion = remoteInfo.latestVersion
+        }
+    }
+
+    LaunchedEffect(pendingExitConfirmation) {
+        if (pendingExitConfirmation) {
+            delay(2_000)
+            pendingExitConfirmation = false
+        }
+    }
+
+    BackHandler(enabled = isLoggedIn && !showCaptchaDialog) {
+        when (pageForUi) {
+            AppPage.HISTORICAL -> {
+                currentScreen = ScreenType.PENDING
+                pendingExitConfirmation = false
+            }
+            AppPage.PENDING -> {
+                if (pendingExitConfirmation) {
+                    (context as? ComponentActivity)?.finish()
+                } else {
+                    pendingExitConfirmation = true
+                    Toast.makeText(context, "Press back again to exit", Toast.LENGTH_SHORT).show()
+                }
+            }
+            AppPage.LOGIN -> Unit
+        }
+    }
 
     suspend fun attemptPortalLogin(
         usernameInput: String,
@@ -373,19 +538,13 @@ fun MainScreen(
                 pendingCaptchaCredentials = null
                 showCaptchaDialog = false
                 try {
-                    val (pending, submitted, photoBytes) = loadAssignmentsAndProfile(repository)
-                    assignments = pending
-                    historicalAssignments = submitted
-                    loggedInStudentName = repository.getCurrentStudentName()
-                    loggedInStudentPhoto = photoBytes
-                    welcomeStatusMessage = generateWelcomeStatusMessage(
-                        pendingCount = pending.size,
-                        submittedCount = submitted.size,
-                        previousMessage = welcomeStatusMessage
-                    )
+                    refreshAssignmentsState()
                     isLoggedIn = true
                     if (saveCredentialsOnSuccess) {
                         context.saveCredentials(normalizedUser, passwordInput)
+                    }
+                    scope.launch {
+                        checkForAppUpdateIfNeeded()
                     }
                 } catch (e: Exception) {
                     Log.e("MainActivity", "Error fetching assignments: ${e.message}", e)
@@ -481,263 +640,260 @@ fun MainScreen(
     }
 
     Surface(modifier = Modifier.fillMaxSize(), color = Sand) {
-        if (isLoading) {
-            when (loadingTargetScreen) {
-                ScreenType.PENDING -> PendingAssignmentsSkeleton()
-                ScreenType.HISTORICAL -> HistoricalAssignmentsSkeleton()
-            }
-        } else if (!isLoggedIn) {
-            LoginScreen(
-                isLoading = isLoading,
-                onLogin = { user, pass ->
-                    loadingTargetScreen = ScreenType.PENDING
-                    isLoading = true
-                    scope.launch {
-                        attemptPortalLogin(
-                            usernameInput = user,
-                            passwordInput = pass,
-                            saveCredentialsOnSuccess = true
+        Box(modifier = Modifier.fillMaxSize()) {
+            Crossfade(
+                targetState = pageForUi,
+                animationSpec = tween(durationMillis = 280, easing = LinearEasing),
+                label = "screen_crossfade"
+            ) { page ->
+                when (page) {
+                    AppPage.LOGIN -> {
+                        LoginScreen(
+                            isLoading = isLoading,
+                            onOpenDisclaimer = { uriHandler.openUri(DISCLAIMER_URL) },
+                            onLogin = { user, pass ->
+                                loadingTargetScreen = ScreenType.PENDING
+                                isLoading = true
+                                scope.launch {
+                                    attemptPortalLogin(
+                                        usernameInput = user,
+                                        passwordInput = pass,
+                                        saveCredentialsOnSuccess = true
+                                    )
+                                    isLoading = false
+                                }
+                            }
                         )
-                        isLoading = false
+                    }
+                    AppPage.PENDING -> {
+                        AssignmentsList(
+                            assignments = assignments,
+                            historicalAssignments = historicalAssignments,
+                            loggedInStudentName = loggedInStudentName,
+                            loggedInStudentPhoto = loggedInStudentPhoto,
+                            welcomeStatusMessage = welcomeStatusMessage,
+                            isRefreshing = isPendingRefreshing,
+                            onOpenDisclaimer = { uriHandler.openUri(DISCLAIMER_URL) },
+                            onRefresh = {
+                                if (isPendingRefreshing) return@AssignmentsList
+                                loadingTargetScreen = ScreenType.PENDING
+                                isPendingRefreshing = true
+                                isLoading = true
+                                scope.launch {
+                                    runCatching { refreshAssignmentsState() }
+                                        .onFailure { e ->
+                                            Log.e("MainActivity", "Refresh failed: ${e.message}", e)
+                                            Toast.makeText(context, "Refresh failed. Please try again.", Toast.LENGTH_SHORT).show()
+                                        }
+                                    isPendingRefreshing = false
+                                    isLoading = false
+                                }
+                            },
+                            onLogout = {
+                                scope.coroutineContext.cancelChildren()
+                                uploadJob?.cancel()
+                                uploadJob = null
+                                isPendingRefreshing = false
+                                isLoading = false
+                                isLoggedIn = false
+                                assignments = emptyList()
+                                historicalAssignments = emptyList()
+                                loggedInStudentName = null
+                                loggedInStudentPhoto = null
+                                welcomeStatusMessage = "Your professors are still thinking how to annoy you in a brutal way possible."
+                                currentScreen = ScreenType.PENDING
+                                context.clearCredentials()
+                            },
+                            onDownloadRequested = { assignment ->
+                                loadingTargetScreen = ScreenType.PENDING
+                                isLoading = true
+                                scope.launch {
+                                    val result = try {
+                                        withTimeout(45_000) {
+                                            withContext(Dispatchers.IO) {
+                                                repository.fetchInstructionFiles(assignment.downloadLink)
+                                            }
+                                        }
+                                    } catch (e: TimeoutCancellationException) {
+                                        InstructionFilesResult.Error("Loading instruction files timed out.")
+                                    } catch (e: IOException) {
+                                        InstructionFilesResult.NetworkError
+                                    }
+                                    withContext(Dispatchers.Main) {
+                                        val msg = when {
+                                            result is InstructionFilesResult.Success -> null
+                                            result is InstructionFilesResult.NetworkError -> "Network unavailable. Could not load instruction files."
+                                            result is InstructionFilesResult.Rejected -> result.reason
+                                            result is InstructionFilesResult.Error -> result.message
+                                            else -> "Failed to load instruction files."
+                                        }
+                                        if (result is InstructionFilesResult.Success) {
+                                            instructionFilesDialog = InstructionFileDialogState(assignment, result.files)
+                                        } else if (msg != null) {
+                                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                    isLoading = false
+                                }
+                            },
+                            onUploadRequested = { assignment, uri ->
+                                loadingTargetScreen = ScreenType.PENDING
+                                isLoading = true
+                                uploadJob?.cancel()
+                                uploadJob = scope.launch {
+                                    var uploadTimeout = false
+                                    val result = try {
+                                        withTimeout(90_000) {
+                                            withContext(Dispatchers.IO) {
+                                                val file = uriToFile(context, uri)
+                                                if (file != null) {
+                                                    retryIo { repository.uploadAssignment(assignment.submitLink, file) }
+                                                } else UploadResult.Error("Could not read selected file.")
+                                            }
+                                        }
+                                    } catch (e: TimeoutCancellationException) {
+                                        uploadTimeout = true
+                                        UploadResult.Timeout
+                                    } catch (e: IOException) {
+                                        UploadResult.NetworkError
+                                    }
+                                    if (result is UploadResult.Success) {
+                                        withContext(Dispatchers.Main) {
+                                            Toast.makeText(context, "Uploaded Successfully", Toast.LENGTH_SHORT).show()
+                                        }
+                                    } else {
+                                        withContext(Dispatchers.Main) {
+                                            val msg = when {
+                                                uploadTimeout -> "Server timeout during upload."
+                                                result is UploadResult.NetworkError -> "Network unavailable. Upload could not start."
+                                                result is UploadResult.Rejected -> result.reason
+                                                result is UploadResult.Error -> result.message
+                                                else -> "Upload rejected by server."
+                                            }
+                                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                    runCatching { refreshAssignmentsState() }
+                                        .onFailure { refreshError ->
+                                            Log.e("MainActivity", "Auto-refresh after upload failed: ${refreshError.message}", refreshError)
+                                        }
+                                    isLoading = false
+                                }
+                            },
+                            onViewHistorical = {
+                                currentScreen = ScreenType.HISTORICAL
+                                loadingTargetScreen = ScreenType.HISTORICAL
+                                isLoading = true
+                                scope.launch {
+                                    val (fetched, photoBytes) = loadHistoricalAndProfile(repository)
+                                    historicalAssignments = fetched
+                                    loggedInStudentPhoto = photoBytes
+                                    welcomeStatusMessage = generateWelcomeStatusMessage(
+                                        pendingCount = assignments.size,
+                                        submittedCount = fetched.size,
+                                        previousMessage = welcomeStatusMessage
+                                    )
+                                    isLoading = false
+                                }
+                            }
+                        )
+                    }
+                    AppPage.HISTORICAL -> {
+                        HistoricalAssignmentsScreen(
+                            assignments = historicalAssignments,
+                            loggedInStudentName = loggedInStudentName,
+                            onOpenDisclaimer = { uriHandler.openUri(DISCLAIMER_URL) },
+                            onNavigateBack = {
+                                currentScreen = ScreenType.PENDING
+                            },
+                            onDownloadRequested = { assignment ->
+                                loadingTargetScreen = ScreenType.HISTORICAL
+                                isLoading = true
+                                scope.launch {
+                                    val result = try {
+                                        withTimeout(45_000) {
+                                            withContext(Dispatchers.IO) {
+                                                repository.fetchInstructionFiles(assignment.downloadLink)
+                                            }
+                                        }
+                                    } catch (e: TimeoutCancellationException) {
+                                        InstructionFilesResult.Error("Loading instruction files timed out.")
+                                    } catch (e: IOException) {
+                                        InstructionFilesResult.NetworkError
+                                    }
+                                    withContext(Dispatchers.Main) {
+                                        val msg = when {
+                                            result is InstructionFilesResult.Success -> null
+                                            result is InstructionFilesResult.NetworkError -> "Network unavailable. Could not load instruction files."
+                                            result is InstructionFilesResult.Rejected -> result.reason
+                                            result is InstructionFilesResult.Error -> result.message
+                                            else -> "Failed to load instruction files."
+                                        }
+                                        if (result is InstructionFilesResult.Success) {
+                                            instructionFilesDialog = InstructionFileDialogState(assignment, result.files)
+                                        } else if (msg != null) {
+                                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                    isLoading = false
+                                }
+                            },
+                            onReuploadRequested = { assignment, uri ->
+                                loadingTargetScreen = ScreenType.HISTORICAL
+                                isLoading = true
+                                uploadJob?.cancel()
+                                uploadJob = scope.launch {
+                                    var uploadTimeout = false
+                                    val result = try {
+                                        withTimeout(90_000) {
+                                            withContext(Dispatchers.IO) {
+                                                val file = uriToFile(context, uri)
+                                                if (file != null) {
+                                                    retryIo { repository.uploadAssignment(assignment.submitLink, file) }
+                                                } else UploadResult.Error("Could not read selected file.")
+                                            }
+                                        }
+                                    } catch (e: TimeoutCancellationException) {
+                                        uploadTimeout = true
+                                        UploadResult.Timeout
+                                    } catch (e: IOException) {
+                                        UploadResult.NetworkError
+                                    }
+                                    if (result is UploadResult.Success) {
+                                        withContext(Dispatchers.Main) {
+                                            Toast.makeText(context, "Re-uploaded Successfully", Toast.LENGTH_SHORT).show()
+                                        }
+                                    } else {
+                                        withContext(Dispatchers.Main) {
+                                            val msg = when {
+                                                uploadTimeout -> "Server timeout during upload."
+                                                result is UploadResult.NetworkError -> "Network unavailable. Upload could not start."
+                                                result is UploadResult.Rejected -> result.reason
+                                                result is UploadResult.Error -> result.message
+                                                else -> "Upload rejected by server."
+                                            }
+                                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                    runCatching { refreshAssignmentsState() }
+                                        .onFailure { refreshError ->
+                                            Log.e("MainActivity", "Auto-refresh after re-upload failed: ${refreshError.message}", refreshError)
+                                        }
+                                    isLoading = false
+                                }
+                            }
+                        )
                     }
                 }
-            )
-        } else {
-            when (currentScreen) {
-                ScreenType.PENDING -> {
-                    AssignmentsList(
-                        assignments = assignments,
-                        historicalAssignments = historicalAssignments,
-                        loggedInStudentName = loggedInStudentName,
-                        loggedInStudentPhoto = loggedInStudentPhoto,
-                        welcomeStatusMessage = welcomeStatusMessage,
-                        onRefresh = {
-                            loadingTargetScreen = ScreenType.PENDING
-                            isLoading = true
-                            scope.launch {
-                                val (pending, submitted, photoBytes) = loadAssignmentsAndProfile(repository)
-                                assignments = pending
-                                historicalAssignments = submitted
-                                loggedInStudentName = repository.getCurrentStudentName()
-                                loggedInStudentPhoto = photoBytes
-                                welcomeStatusMessage = generateWelcomeStatusMessage(
-                                    pendingCount = pending.size,
-                                    submittedCount = submitted.size,
-                                    previousMessage = welcomeStatusMessage
-                                )
-                                isLoading = false
-                            }
-                        },
-                        onLogout = {
-                            isLoggedIn = false
-                            assignments = emptyList()
-                            historicalAssignments = emptyList()
-                            loggedInStudentName = null
-                            loggedInStudentPhoto = null
-                            welcomeStatusMessage = "Your professors are still thinking how to annoy you in a brutal way possible."
-                            currentScreen = ScreenType.PENDING
-                            // Clear saved credentials on logout
-                            context.clearCredentials()
-                        },
-                        onDownloadRequested = { assignment ->
-                            loadingTargetScreen = ScreenType.PENDING
-                            isLoading = true
-                            scope.launch {
-                                val result = try {
-                                    withTimeout(45_000) {
-                                        withContext(Dispatchers.IO) {
-                                            repository.fetchInstructionFiles(assignment.downloadLink)
-                                        }
-                                    }
-                                } catch (e: TimeoutCancellationException) {
-                                    InstructionFilesResult.Error("Loading instruction files timed out.")
-                                } catch (e: IOException) {
-                                    InstructionFilesResult.NetworkError
-                                }
-                                withContext(Dispatchers.Main) {
-                                    val msg = when {
-                                        result is InstructionFilesResult.Success -> null
-                                        result is InstructionFilesResult.NetworkError -> "Network unavailable. Could not load instruction files."
-                                        result is InstructionFilesResult.Rejected -> result.reason
-                                        result is InstructionFilesResult.Error -> result.message
-                                        else -> "Failed to load instruction files."
-                                    }
-                                    if (result is InstructionFilesResult.Success) {
-                                        instructionFilesDialog = InstructionFileDialogState(assignment, result.files)
-                                    } else if (msg != null) {
-                                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                                isLoading = false
-                            }
-                        },
-                        onUploadRequested = { assignment, uri ->
-                            loadingTargetScreen = ScreenType.PENDING
-                            isLoading = true
-                            uploadJob?.cancel()
-                            uploadJob = scope.launch {
-                                var uploadTimeout = false
-                                val result = try {
-                                    withTimeout(90_000) {
-                                        withContext(Dispatchers.IO) {
-                                            val file = uriToFile(context, uri)
-                                            if (file != null) {
-                                                retryIo { repository.uploadAssignment(assignment.submitLink, file) }
-                                            } else UploadResult.Error("Could not read selected file.")
-                                        }
-                                    }
-                                } catch (e: TimeoutCancellationException) {
-                                    uploadTimeout = true
-                                    UploadResult.Timeout
-                                } catch (e: IOException) {
-                                    UploadResult.NetworkError
-                                }
-                                if (result is UploadResult.Success) {
-                                    withContext(Dispatchers.Main) {
-                                        Toast.makeText(context, "Uploaded Successfully", Toast.LENGTH_SHORT).show()
-                                    }
-                                } else {
-                                    withContext(Dispatchers.Main) {
-                                        val msg = when {
-                                            uploadTimeout -> "Server timeout during upload."
-                                            result is UploadResult.NetworkError -> "Network unavailable. Upload could not start."
-                                            result is UploadResult.Rejected -> result.reason
-                                            result is UploadResult.Error -> result.message
-                                            else -> "Upload rejected by server."
-                                        }
-                                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                                runCatching {
-                                    val (pending, submitted, photoBytes) = loadAssignmentsAndProfile(repository)
-                                    assignments = pending
-                                    historicalAssignments = submitted
-                                    loggedInStudentName = repository.getCurrentStudentName()
-                                    loggedInStudentPhoto = photoBytes
-                                    welcomeStatusMessage = generateWelcomeStatusMessage(
-                                        pendingCount = pending.size,
-                                        submittedCount = submitted.size,
-                                        previousMessage = welcomeStatusMessage
-                                    )
-                                }.onFailure { refreshError ->
-                                    Log.e("MainActivity", "Auto-refresh after upload failed: ${refreshError.message}", refreshError)
-                                }
-                                isLoading = false
-                            }
-                        },
-                        onViewHistorical = {
-                            currentScreen = ScreenType.HISTORICAL
-                            loadingTargetScreen = ScreenType.HISTORICAL
-                            isLoading = true
-                            scope.launch {
-                                val (fetched, photoBytes) = loadHistoricalAndProfile(repository)
-                                historicalAssignments = fetched
-                                loggedInStudentPhoto = photoBytes
-                                welcomeStatusMessage = generateWelcomeStatusMessage(
-                                    pendingCount = assignments.size,
-                                    submittedCount = fetched.size,
-                                    previousMessage = welcomeStatusMessage
-                                )
-                                isLoading = false
-                            }
-                        }
-                    )
+            }
+
+            if (isLoading) {
+                val loadingMessage = when {
+                    pageForUi == AppPage.LOGIN -> "Signing in..."
+                    loadingTargetScreen == ScreenType.HISTORICAL -> "Loading historical assignments..."
+                    else -> "Loading assignments..."
                 }
-                ScreenType.HISTORICAL -> {
-                    HistoricalAssignmentsScreen(
-                        assignments = historicalAssignments,
-                        loggedInStudentName = loggedInStudentName,
-                        onNavigateBack = {
-                            currentScreen = ScreenType.PENDING
-                        },
-                        onDownloadRequested = { assignment ->
-                            loadingTargetScreen = ScreenType.HISTORICAL
-                            isLoading = true
-                            scope.launch {
-                                val result = try {
-                                    withTimeout(45_000) {
-                                        withContext(Dispatchers.IO) {
-                                            repository.fetchInstructionFiles(assignment.downloadLink)
-                                        }
-                                    }
-                                } catch (e: TimeoutCancellationException) {
-                                    InstructionFilesResult.Error("Loading instruction files timed out.")
-                                } catch (e: IOException) {
-                                    InstructionFilesResult.NetworkError
-                                }
-                                withContext(Dispatchers.Main) {
-                                    val msg = when {
-                                        result is InstructionFilesResult.Success -> null
-                                        result is InstructionFilesResult.NetworkError -> "Network unavailable. Could not load instruction files."
-                                        result is InstructionFilesResult.Rejected -> result.reason
-                                        result is InstructionFilesResult.Error -> result.message
-                                        else -> "Failed to load instruction files."
-                                    }
-                                    if (result is InstructionFilesResult.Success) {
-                                        instructionFilesDialog = InstructionFileDialogState(assignment, result.files)
-                                    } else if (msg != null) {
-                                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                                isLoading = false
-                            }
-                        },
-                        onReuploadRequested = { assignment, uri ->
-                            loadingTargetScreen = ScreenType.HISTORICAL
-                            isLoading = true
-                            uploadJob?.cancel()
-                            uploadJob = scope.launch {
-                                var uploadTimeout = false
-                                val result = try {
-                                    withTimeout(90_000) {
-                                        withContext(Dispatchers.IO) {
-                                            val file = uriToFile(context, uri)
-                                            if (file != null) {
-                                                retryIo { repository.uploadAssignment(assignment.submitLink, file) }
-                                            } else UploadResult.Error("Could not read selected file.")
-                                        }
-                                    }
-                                } catch (e: TimeoutCancellationException) {
-                                    uploadTimeout = true
-                                    UploadResult.Timeout
-                                } catch (e: IOException) {
-                                    UploadResult.NetworkError
-                                }
-                                if (result is UploadResult.Success) {
-                                    withContext(Dispatchers.Main) {
-                                        Toast.makeText(context, "Re-uploaded Successfully", Toast.LENGTH_SHORT).show()
-                                    }
-                                } else {
-                                    withContext(Dispatchers.Main) {
-                                        val msg = when {
-                                            uploadTimeout -> "Server timeout during upload."
-                                            result is UploadResult.NetworkError -> "Network unavailable. Upload could not start."
-                                            result is UploadResult.Rejected -> result.reason
-                                            result is UploadResult.Error -> result.message
-                                            else -> "Upload rejected by server."
-                                        }
-                                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                                runCatching {
-                                    val (pending, submitted, photoBytes) = loadAssignmentsAndProfile(repository)
-                                    assignments = pending
-                                    historicalAssignments = submitted
-                                    loggedInStudentName = repository.getCurrentStudentName()
-                                    loggedInStudentPhoto = photoBytes
-                                    welcomeStatusMessage = generateWelcomeStatusMessage(
-                                        pendingCount = pending.size,
-                                        submittedCount = submitted.size,
-                                        previousMessage = welcomeStatusMessage
-                                    )
-                                }.onFailure { refreshError ->
-                                    Log.e("MainActivity", "Auto-refresh after re-upload failed: ${refreshError.message}", refreshError)
-                                }
-                                isLoading = false
-                            }
-                        }
-                    )
-                }
+                LoadingStatusOverlay(message = loadingMessage)
             }
         }
     }
@@ -763,6 +919,55 @@ fun MainScreen(
                 }
             }
         )
+    }
+
+    val updateInfo = updateDialogInfo
+    if (updateInfo != null) {
+        Dialog(
+            onDismissRequest = { updateDialogInfo = null },
+            properties = DialogProperties(dismissOnBackPress = true, dismissOnClickOutside = false)
+        ) {
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = if (isSystemInDarkTheme()) Color(0xFF101418) else Color.White),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Update Available",
+                            color = Cyprus,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp
+                        )
+                        IconButton(onClick = { updateDialogInfo = null }) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Close update dialog",
+                                tint = Cyprus
+                            )
+                        }
+                    }
+                    Text(
+                        text = "A newer version (v${updateInfo.latestVersion}) is available.",
+                        color = Color(0xFF2E2E2E),
+                        fontSize = 14.sp
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Button(
+                        onClick = { uriHandler.openUri(updateInfo.releaseUrl) },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = Cyprus)
+                    ) {
+                        Text("Update now", color = Color.White, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+        }
     }
 
     val dialogState = instructionFilesDialog
@@ -1035,7 +1240,64 @@ private fun HistoricalAssignmentsSkeleton() {
 }
 
 @Composable
-fun LoginScreen(isLoading: Boolean, onLogin: (String, String) -> Unit) {
+private fun DisclaimerFooter(
+    modifier: Modifier = Modifier,
+    onOpenDisclaimer: () -> Unit
+) {
+    TextButton(
+        onClick = onOpenDisclaimer,
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Text(
+            text = "Disclaimer",
+            color = Cyprus,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 12.sp
+        )
+    }
+}
+
+@Composable
+private fun LoadingStatusOverlay(message: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.08f))
+            .padding(16.dp),
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        Card(
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    color = Cyprus,
+                    strokeWidth = 2.dp
+                )
+                Text(
+                    text = message,
+                    color = Cyprus,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun LoginScreen(
+    isLoading: Boolean,
+    onOpenDisclaimer: () -> Unit,
+    onLogin: (String, String) -> Unit
+) {
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
@@ -1545,6 +1807,8 @@ fun AssignmentsList(
     loggedInStudentName: String?,
     loggedInStudentPhoto: ByteArray?,
     welcomeStatusMessage: String,
+    isRefreshing: Boolean,
+    onOpenDisclaimer: () -> Unit,
     onRefresh: () -> Unit,
     onLogout: () -> Unit,
     onDownloadRequested: (Assignment) -> Unit,
@@ -1606,177 +1870,187 @@ fun AssignmentsList(
         },
         containerColor = Sand
     ) { padding ->
-        LazyColumn(
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = onRefresh,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
-            contentPadding = PaddingValues(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(padding)
         ) {
-            item {
-                StudentWelcomeCard(
-                    studentName = loggedInStudentName,
-                    profileBitmap = profileBitmap,
-                    statusMessage = welcomeStatusMessage
-                )
-            }
-
-            if (assignments.isEmpty() && historicalAssignments.isEmpty()) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 56.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            "No assignments",
-                            color = Cyprus.copy(alpha = 0.55f),
-                            fontSize = 15.sp
-                        )
-                    }
+                    StudentWelcomeCard(
+                        studentName = loggedInStudentName,
+                        profileBitmap = profileBitmap,
+                        statusMessage = welcomeStatusMessage
+                    )
                 }
-            } else {
-                // Assignment Summary Card
-                item {
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .shadow(4.dp, shape = RoundedCornerShape(12.dp))
-                            .clickable { onViewHistorical() },
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = Cyprus)
-                    ) {
-                        Column(
+
+                if (assignments.isEmpty() && historicalAssignments.isEmpty()) {
+                    item {
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(16.dp)
+                                .padding(vertical = 56.dp),
+                            contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                "Assignment Summary",
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White,
-                                modifier = Modifier.padding(bottom = 12.dp)
+                                "No assignments",
+                                color = Cyprus.copy(alpha = 0.55f),
+                                fontSize = 15.sp
                             )
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                        }
+                    }
+                } else {
+                    // Assignment Summary Card
+                    item {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .shadow(4.dp, shape = RoundedCornerShape(12.dp))
+                                .clickable { onViewHistorical() },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = Cyprus)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp)
                             ) {
-                                val pendingAssignmentsCount = assignments.count { it.status == AssignmentStatus.PENDING }
-                                val closedNotSubmittedCount = assignments.count { it.status == AssignmentStatus.NOT_SUBMITTED_CLOSED }
-                                val submittedAssignmentsCount = historicalAssignments.size
-                                val totalAssignmentsCount = pendingAssignmentsCount + closedNotSubmittedCount + submittedAssignmentsCount
+                                Text(
+                                    "Assignment Summary",
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    modifier = Modifier.padding(bottom = 12.dp)
+                                )
 
-                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
-                                    Text("$totalAssignmentsCount", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                    Text("Total", fontSize = 11.sp, color = Color.White.copy(alpha = 0.8f))
-                                }
-                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
-                                    Text("$pendingAssignmentsCount", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFFD700))
-                                    Text("Pending", fontSize = 11.sp, color = Color.White.copy(alpha = 0.8f))
-                                }
-                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
-                                    Text("$submittedAssignmentsCount", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
-                                    Text("Submitted", fontSize = 11.sp, color = Color.White.copy(alpha = 0.8f))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    val pendingAssignmentsCount = assignments.count { it.status == AssignmentStatus.PENDING }
+                                    val closedNotSubmittedCount = assignments.count { it.status == AssignmentStatus.NOT_SUBMITTED_CLOSED }
+                                    val submittedAssignmentsCount = historicalAssignments.size
+                                    val totalAssignmentsCount = pendingAssignmentsCount + closedNotSubmittedCount + submittedAssignmentsCount
+
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                                        Text("$totalAssignmentsCount", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                        Text("Total", fontSize = 11.sp, color = Color.White.copy(alpha = 0.8f))
+                                    }
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                                        Text("$pendingAssignmentsCount", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFFD700))
+                                        Text("Pending", fontSize = 11.sp, color = Color.White.copy(alpha = 0.8f))
+                                    }
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                                        Text("$submittedAssignmentsCount", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
+                                        Text("Submitted", fontSize = 11.sp, color = Color.White.copy(alpha = 0.8f))
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                item {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(tableScrollState)
-                            .background(Cyprus)
-                            .padding(10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("#", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.width(35.dp))
-                        Text("Course Title", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.width(140.dp))
-                        Text("Title", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.width(100.dp))
-                        Text("Start-Date", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.width(95.dp))
-                        Text("Deadline", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.width(110.dp))
-                        Text("Status", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.width(80.dp))
-                        Text("Download", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.width(90.dp))
-                        Text("Submit", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.width(90.dp))
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(tableScrollState)
+                                .background(Cyprus)
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("#", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.width(35.dp))
+                            Text("Course Title", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.width(140.dp))
+                            Text("Title", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.width(100.dp))
+                            Text("Start-Date", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.width(95.dp))
+                            Text("Deadline", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.width(110.dp))
+                            Text("Status", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.width(80.dp))
+                            Text("Download", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.width(90.dp))
+                            Text("Submit", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.width(90.dp))
+                        }
                     }
-                }
 
-                itemsIndexed(assignments) { index, assignment ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(tableScrollState)
-                            .background(if (index % 2 == 0) Color.White else Color(0xFFF0F0F0))
-                            .border(1.dp, Color.LightGray)
-                            .padding(10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("${index + 1}", fontSize = 12.sp, modifier = Modifier.width(35.dp))
-                        Text(
-                            assignment.courseTitle,
-                            fontSize = 12.sp,
-                            color = Color(0xFF0066CC),
-                            modifier = Modifier.width(140.dp),
-                            maxLines = 1
-                        )
-                        Text(
-                            assignment.assignmentTitle,
-                            fontSize = 12.sp,
-                            modifier = Modifier.width(100.dp),
-                            maxLines = 1
-                        )
-                        Text(
-                            assignment.deadline.split(" ")[0],
-                            fontSize = 12.sp,
-                            modifier = Modifier.width(95.dp),
-                            maxLines = 1
-                        )
-                        Text(
-                            assignment.deadline,
-                            fontSize = 11.sp,
-                            modifier = Modifier.width(110.dp),
-                            maxLines = 1
-                        )
-                        val isNotSubmittedClosed = assignment.status == AssignmentStatus.NOT_SUBMITTED_CLOSED
-                        val statusText = if (isNotSubmittedClosed) "Not submitted\nClosed" else "Pending"
-                        val statusColor = if (isNotSubmittedClosed) Color(0xFFD32F2F) else Color(0xFF4CAF50)
-                        Text(
-                            statusText,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = statusColor,
-                            modifier = Modifier.width(80.dp)
-                        )
-                        val canDownload = assignment.downloadLink.isNotEmpty()
-                        Text(
-                            if (canDownload) "Download" else "N/A",
-                            fontSize = 11.sp,
-                            color = if (canDownload) Color(0xFF0066CC) else Color.Gray,
+                    itemsIndexed(assignments) { index, assignment ->
+                        Row(
                             modifier = Modifier
-                                .width(90.dp)
-                                .clickable(enabled = canDownload) {
-                                    onDownloadRequested(assignment)
-                                }
-                        )
-                        Text(
-                            "Upload File",
-                            fontSize = 11.sp,
-                            color = Color(0xFF0066CC),
-                            modifier = Modifier
-                                .width(90.dp)
-                                .clickable {
-                                    if (assignment.submitLink.isNotEmpty()) {
-                                        selectedAssignment = assignment
-                                        launcher.launch("*/*")
+                                .fillMaxWidth()
+                                .horizontalScroll(tableScrollState)
+                                .background(if (index % 2 == 0) Color.White else Color(0xFFF0F0F0))
+                                .border(1.dp, Color.LightGray)
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("${index + 1}", fontSize = 12.sp, modifier = Modifier.width(35.dp))
+                            Text(
+                                assignment.courseTitle,
+                                fontSize = 12.sp,
+                                color = Color(0xFF0066CC),
+                                modifier = Modifier.width(140.dp),
+                                maxLines = 1
+                            )
+                            Text(
+                                assignment.assignmentTitle,
+                                fontSize = 12.sp,
+                                modifier = Modifier.width(100.dp),
+                                maxLines = 1
+                            )
+                            Text(
+                                assignment.deadline.split(" ")[0],
+                                fontSize = 12.sp,
+                                modifier = Modifier.width(95.dp),
+                                maxLines = 1
+                            )
+                            Text(
+                                assignment.deadline,
+                                fontSize = 11.sp,
+                                modifier = Modifier.width(110.dp),
+                                maxLines = 1
+                            )
+                            val isNotSubmittedClosed = assignment.status == AssignmentStatus.NOT_SUBMITTED_CLOSED
+                            val statusText = if (isNotSubmittedClosed) "Not submitted\nClosed" else "Pending"
+                            val statusColor = if (isNotSubmittedClosed) Color(0xFFD32F2F) else Color(0xFF4CAF50)
+                            Text(
+                                statusText,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = statusColor,
+                                modifier = Modifier.width(80.dp)
+                            )
+                            val canDownload = assignment.downloadLink.isNotEmpty()
+                            Text(
+                                if (canDownload) "Download" else "N/A",
+                                fontSize = 11.sp,
+                                color = if (canDownload) Color(0xFF0066CC) else Color.Gray,
+                                modifier = Modifier
+                                    .width(90.dp)
+                                    .clickable(enabled = canDownload) {
+                                        onDownloadRequested(assignment)
                                     }
-                                }
-                        )
+                            )
+                            Text(
+                                "Upload File",
+                                fontSize = 11.sp,
+                                color = Color(0xFF0066CC),
+                                modifier = Modifier
+                                    .width(90.dp)
+                                    .clickable {
+                                        if (assignment.submitLink.isNotEmpty()) {
+                                            selectedAssignment = assignment
+                                            launcher.launch("*/*")
+                                        }
+                                    }
+                            )
+                        }
                     }
+                }
+                item {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    DisclaimerFooter(onOpenDisclaimer = onOpenDisclaimer)
                 }
             }
         }
@@ -1788,6 +2062,7 @@ fun AssignmentsList(
 fun HistoricalAssignmentsScreen(
     assignments: List<Assignment>,
     loggedInStudentName: String?,
+    onOpenDisclaimer: () -> Unit,
     onNavigateBack: () -> Unit,
     onDownloadRequested: (Assignment) -> Unit = { _ -> },
     onReuploadRequested: (Assignment, Uri) -> Unit = { _, _ -> }
@@ -1998,6 +2273,11 @@ fun HistoricalAssignmentsScreen(
                         }
                     }
                 }
+
+            }
+            item {
+                Spacer(modifier = Modifier.height(4.dp))
+                DisclaimerFooter(onOpenDisclaimer = onOpenDisclaimer)
             }
         }
     }
