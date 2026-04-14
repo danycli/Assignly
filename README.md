@@ -231,6 +231,6 @@ This is an **unofficial third-party client** for the COMSATS SIS portal. It is n
 
 ## Author
 
-Built by **danycli** a student who got tired of the portal's mobile experience and decided to fix it.
+Built by **danycli** a student who got tired of the portal's web experience and decided to fix it.
 
 *Made with frustration, caffeine, and Jetpack Compose.*
