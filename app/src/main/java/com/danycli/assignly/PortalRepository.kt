@@ -581,15 +581,14 @@ class PortalRepository {
         if (urlSignals) return true
         if (normalizedHtml.isBlank()) return false
 
-        val hasCloudflareSignals = listOf(
-            "cloudflare",
+        val hasChallengeArtifacts = listOf(
             "cf_chl",
             "cf-browser-verification",
             "challenge-platform",
-            "cf_clearance",
-            "ray id",
             "cf-turnstile",
-            "challenges.cloudflare.com"
+            "challenges.cloudflare.com",
+            "id=\"challenge-form\"",
+            "name=\"cf-turnstile-response\""
         ).any { marker -> normalizedHtml.contains(marker) }
 
         val hasChallengeLanguage = listOf(
@@ -604,7 +603,30 @@ class PortalRepository {
             return false
         }
 
-        return hasCloudflareSignals && hasChallengeLanguage
+        return hasChallengeArtifacts && hasChallengeLanguage
+    }
+
+    private fun isSecurityVerificationResponse(response: Response, resolvedUrl: String, body: String): Boolean {
+        if (isSecurityVerificationPage(resolvedUrl, body)) {
+            return true
+        }
+
+        val statusCodeSignals = response.code == 403 || response.code == 429 || response.code == 503
+        if (!statusCodeSignals) {
+            return false
+        }
+
+        val serverHeader = response.header("Server").orEmpty().lowercase()
+        val hasCloudflareHeaders = serverHeader.contains("cloudflare") ||
+            !response.header("CF-RAY").isNullOrBlank() ||
+            !response.header("cf-mitigated").isNullOrBlank()
+        if (!hasCloudflareHeaders) {
+            return false
+        }
+
+        val contentType = response.header("Content-Type").orEmpty().lowercase()
+        val isHtmlLike = contentType.contains("text/html") || contentType.contains("application/xhtml")
+        return isHtmlLike || body.isNotBlank()
     }
 
     private fun hasSessionCookiesForHost(host: String): Boolean {
@@ -745,12 +767,17 @@ class PortalRepository {
             ).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 val resolvedUrl = response.request.url.toString()
+                val securityVerificationDetected = isSecurityVerificationResponse(response, resolvedUrl, body)
                 if (!response.isSuccessful) {
-                    if (response.code == 403 || response.code == 429 || response.code == 503 || isSecurityVerificationPage(resolvedUrl, body)) {
+                    if (securityVerificationDetected) {
                         debugLog("Security verification detected on initial GET (HTTP ${response.code})")
                         return LoginResult.CaptchaRequired
                     }
                     return LoginResult.Error("HTTP ${response.code}")
+                }
+                if (securityVerificationDetected) {
+                    debugLog("Security verification detected on initial GET content")
+                    return LoginResult.CaptchaRequired
                 }
                 if (body.isBlank()) return LoginResult.Error("Empty server response")
                 resolvedUrl to body
@@ -959,12 +986,17 @@ class PortalRepository {
             val finalPayload = client.newCall(postRequest).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 val resolvedUrl = response.request.url.toString()
+                val securityVerificationDetected = isSecurityVerificationResponse(response, resolvedUrl, body)
                 if (!response.isSuccessful) {
-                    if (response.code == 403 || response.code == 429 || response.code == 503 || isSecurityVerificationPage(resolvedUrl, body)) {
+                    if (securityVerificationDetected) {
                         debugLog("Security verification detected after login submit (HTTP ${response.code})")
                         return LoginResult.CaptchaRequired
                     }
                     return LoginResult.Error("HTTP ${response.code}")
+                }
+                if (securityVerificationDetected) {
+                    debugLog("Security verification detected after login submit content")
+                    return LoginResult.CaptchaRequired
                 }
                 if (body.isBlank()) return LoginResult.Error("Empty server response")
                 resolvedUrl to body
@@ -995,12 +1027,17 @@ class PortalRepository {
             val verifyPayload = client.newCall(verifyRequest).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 val resolvedUrl = response.request.url.toString()
+                val securityVerificationDetected = isSecurityVerificationResponse(response, resolvedUrl, body)
                 if (!response.isSuccessful) {
-                    if (response.code == 403 || response.code == 429 || response.code == 503 || isSecurityVerificationPage(resolvedUrl, body)) {
+                    if (securityVerificationDetected) {
                         debugLog("Security verification detected on verify page (HTTP ${response.code})")
                         return LoginResult.CaptchaRequired
                     }
                     return LoginResult.Error("HTTP ${response.code}")
+                }
+                if (securityVerificationDetected) {
+                    debugLog("Security verification detected on verify page content")
+                    return LoginResult.CaptchaRequired
                 }
                 if (body.isBlank()) return LoginResult.Error("Empty server response")
                 resolvedUrl to body

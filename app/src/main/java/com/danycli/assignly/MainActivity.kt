@@ -102,6 +102,9 @@ import java.io.IOException
 private const val DISCLAIMER_URL = "https://github.com/danycli/Assignly#disclaimer"
 private const val RELEASES_API_URL = "https://api.github.com/repos/danycli/Assignly/releases"
 private const val RELEASES_FALLBACK_URL = "https://github.com/danycli/Assignly/releases/tag/Android_Application"
+private const val CAPTCHA_RETRY_DELAY_MS = 650L
+private const val CAPTCHA_SOLVED_CONTINUE_DELAY_MS = 1300L
+private const val CAPTCHA_NOT_SHOWN_CONTINUE_DELAY_MS = 700L
 
 private data class AppUpdateInfo(
     val latestVersion: String,
@@ -521,16 +524,23 @@ fun MainScreen(
         saveCredentialsOnSuccess: Boolean
     ) {
         val normalizedUser = usernameInput.trim().uppercase()
-        val result = try {
-            withTimeout(45_000) {
-                withContext(Dispatchers.IO) {
-                    retryIo { repository.login(normalizedUser, passwordInput) }
+        suspend fun performLoginRequest(): LoginResult {
+            return try {
+                withTimeout(45_000) {
+                    withContext(Dispatchers.IO) {
+                        retryIo { repository.login(normalizedUser, passwordInput) }
+                    }
                 }
+            } catch (e: TimeoutCancellationException) {
+                LoginResult.Error("Login timed out. Please try again.")
+            } catch (e: IOException) {
+                LoginResult.Error("Network error. Please try again.")
             }
-        } catch (e: TimeoutCancellationException) {
-            LoginResult.Error("Login timed out. Please try again.")
-        } catch (e: IOException) {
-            LoginResult.Error("Network error. Please try again.")
+        }
+        var result = performLoginRequest()
+        if (result is LoginResult.CaptchaRequired) {
+            delay(CAPTCHA_RETRY_DELAY_MS)
+            result = performLoginRequest()
         }
 
         when (result) {
@@ -1558,6 +1568,7 @@ private fun CaptchaWebViewDialog(
     var challengeEncountered by remember { mutableStateOf(false) }
     var clearanceCookieSeen by remember { mutableStateOf(false) }
     var hasAutoSubmitted by remember { mutableStateOf(false) }
+    var noChallengeBypassReady by remember { mutableStateOf(false) }
     var autoSubmitJob by remember { mutableStateOf<Job?>(null) }
     var currentUrl by remember { mutableStateOf(loginUrl) }
     val autoSubmitScope = rememberCoroutineScope()
@@ -1581,7 +1592,12 @@ private fun CaptchaWebViewDialog(
 
     fun isPortalHostUrl(url: String): Boolean {
         if (portalHost.isBlank()) return false
-        return runCatching { url.toHttpUrl().host.equals(portalHost, ignoreCase = true) }.getOrDefault(false)
+        val candidateHost = runCatching { url.toHttpUrl().host.lowercase() }.getOrDefault("")
+        if (candidateHost.isBlank()) return false
+        val canonicalPortalHost = portalHost.lowercase()
+        return candidateHost == canonicalPortalHost ||
+            candidateHost.endsWith(".$canonicalPortalHost") ||
+            canonicalPortalHost.endsWith(".$candidateHost")
     }
 
     fun injectCookiesFromCurrentSession(): Int {
@@ -1610,7 +1626,7 @@ private fun CaptchaWebViewDialog(
         autoSubmitJob?.cancel()
         autoSubmitJob = autoSubmitScope.launch {
             // Let Cloudflare/session cookies settle before submitting to avoid retry loops.
-            delay(2500)
+            delay(CAPTCHA_SOLVED_CONTINUE_DELAY_MS)
             if (hasAutoSubmitted || !challengeEncountered || !clearanceCookieSeen || !challengeLooksSolved || !isPortalHostUrl(currentUrl)) {
                 return@launch
             }
@@ -1622,6 +1638,26 @@ private fun CaptchaWebViewDialog(
                 Toast.makeText(context, "Verification completed. Signing in...", Toast.LENGTH_SHORT).show()
                 onCaptchaSolved()
             }
+        }
+    }
+
+    fun scheduleNoChallengeContinueIfReady() {
+        if (hasAutoSubmitted || !noChallengeBypassReady || !isPortalHostUrl(currentUrl)) {
+            return
+        }
+
+        autoSubmitJob?.cancel()
+        autoSubmitJob = autoSubmitScope.launch {
+            delay(CAPTCHA_NOT_SHOWN_CONTINUE_DELAY_MS)
+            if (hasAutoSubmitted || !noChallengeBypassReady || !isPortalHostUrl(currentUrl)) {
+                return@launch
+            }
+            repository.setUserAgentForSession(webViewUa)
+            CookieManager.getInstance().flush()
+            injectCookiesFromCurrentSession()
+            hasAutoSubmitted = true
+            Toast.makeText(context, "No CAPTCHA shown. Continuing sign-in...", Toast.LENGTH_SHORT).show()
+            onCaptchaSolved()
         }
     }
 
@@ -1690,6 +1726,7 @@ private fun CaptchaWebViewDialog(
                             webViewClient = object : WebViewClient() {
                                 override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                                     isPageLoading = true
+                                    noChallengeBypassReady = false
                                     autoSubmitJob?.cancel()
                                     autoSubmitJob = null
                                     if (!url.isNullOrBlank()) {
@@ -1725,6 +1762,10 @@ private fun CaptchaWebViewDialog(
                                         challengeEncountered = true
                                     }
                                     clearanceCookieSeen = clearanceCookieSeen || hasClearanceCookie
+                                    val portalWithoutChallenge = isPortalHostUrl(resolvedUrl) &&
+                                        !onChallengeEndpoint &&
+                                        !likelyChallenge
+                                    noChallengeBypassReady = !challengeEncountered && portalWithoutChallenge
                                     challengeLooksSolved = isPortalHostUrl(resolvedUrl) &&
                                         !onChallengeEndpoint &&
                                         !likelyChallenge &&
@@ -1732,6 +1773,7 @@ private fun CaptchaWebViewDialog(
                                         clearanceCookieSeen
                                     injectCookiesFromCurrentSession()
                                     scheduleAutoContinueIfReady()
+                                    scheduleNoChallengeContinueIfReady()
                                     super.onPageFinished(view, url)
                                 }
 
@@ -1754,16 +1796,47 @@ private fun CaptchaWebViewDialog(
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Button(
-                        onClick = onDismiss,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = Cyprus)
-                    ) {
-                        Text("Cancel", color = Color.White)
+                    if (noChallengeBypassReady && !hasAutoSubmitted) {
+                        OutlinedButton(
+                            onClick = {
+                                repository.setUserAgentForSession(webViewUa)
+                                CookieManager.getInstance().flush()
+                                injectCookiesFromCurrentSession()
+                                hasAutoSubmitted = true
+                                Toast.makeText(context, "Continuing sign-in...", Toast.LENGTH_SHORT).show()
+                                onCaptchaSolved()
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Cyprus)
+                        ) {
+                            Text("Continue")
+                        }
+                        Button(
+                            onClick = onDismiss,
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = Cyprus)
+                        ) {
+                            Text("Cancel", color = Color.White)
+                        }
+                    } else {
+                        Button(
+                            onClick = onDismiss,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = Cyprus)
+                        ) {
+                            Text("Cancel", color = Color.White)
+                        }
                     }
                 }
 
-                if (!challengeLooksSolved) {
+                if (noChallengeBypassReady && !hasAutoSubmitted) {
+                    Text(
+                        text = "No CAPTCHA prompt detected. Sign-in continues automatically.",
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                        fontSize = 12.sp,
+                        color = Cyprus
+                    )
+                } else if (!challengeLooksSolved) {
                     Text(
                         text = "Solve CAPTCHA. Sign-in continues automatically.",
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
