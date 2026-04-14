@@ -24,6 +24,10 @@
 -keep class androidx.security.crypto.** { *; }
 -dontwarn org.conscrypt.**
 
+# Fix for missing errorprone annotations often caused by Tink/Security-Crypto
+-dontwarn com.google.errorprone.annotations.**
+-dontwarn javax.annotation.**
+
 # Strip Android Log calls from release builds.
 -assumenosideeffects class android.util.Log {
     public static int v(...);

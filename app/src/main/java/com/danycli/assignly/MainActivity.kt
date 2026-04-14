@@ -6,6 +6,13 @@ import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
+import android.webkit.CookieManager
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import androidx.activity.ComponentActivity
@@ -13,6 +20,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -60,6 +68,8 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.danycli.assignmentchecker.ui.theme.AssignmentCheckerTheme
@@ -335,8 +345,68 @@ fun MainScreen(
     var uploadJob by remember { mutableStateOf<Job?>(null) }
     var instructionFilesDialog by remember { mutableStateOf<InstructionFileDialogState?>(null) }
     var selectedInstructionFile by remember { mutableStateOf<InstructionFile?>(null) }
+    var pendingCaptchaCredentials by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var showCaptchaDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    suspend fun attemptPortalLogin(
+        usernameInput: String,
+        passwordInput: String,
+        saveCredentialsOnSuccess: Boolean
+    ) {
+        val normalizedUser = usernameInput.trim().uppercase()
+        val result = try {
+            withTimeout(45_000) {
+                withContext(Dispatchers.IO) {
+                    retryIo { repository.login(normalizedUser, passwordInput) }
+                }
+            }
+        } catch (e: TimeoutCancellationException) {
+            LoginResult.Error("Login timed out. Please try again.")
+        } catch (e: IOException) {
+            LoginResult.Error("Network error. Please try again.")
+        }
+
+        when (result) {
+            is LoginResult.Success -> {
+                pendingCaptchaCredentials = null
+                showCaptchaDialog = false
+                try {
+                    val (pending, submitted, photoBytes) = loadAssignmentsAndProfile(repository)
+                    assignments = pending
+                    historicalAssignments = submitted
+                    loggedInStudentName = repository.getCurrentStudentName()
+                    loggedInStudentPhoto = photoBytes
+                    welcomeStatusMessage = generateWelcomeStatusMessage(
+                        pendingCount = pending.size,
+                        submittedCount = submitted.size,
+                        previousMessage = welcomeStatusMessage
+                    )
+                    isLoggedIn = true
+                    if (saveCredentialsOnSuccess) {
+                        context.saveCredentials(normalizedUser, passwordInput)
+                    }
+                } catch (e: Exception) {
+                    Log.e("MainActivity", "Error fetching assignments: ${e.message}", e)
+                    Toast.makeText(context, "Error loading assignments: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+            is LoginResult.InvalidCredentials -> {
+                pendingCaptchaCredentials = null
+                showCaptchaDialog = false
+                Toast.makeText(context, "Authentication failed. Check your ID/password.", Toast.LENGTH_LONG).show()
+            }
+            is LoginResult.CaptchaRequired -> {
+                pendingCaptchaCredentials = normalizedUser to passwordInput
+                showCaptchaDialog = true
+                Toast.makeText(context, "Security verification required. Complete CAPTCHA in-app, then continue.", Toast.LENGTH_LONG).show()
+            }
+            is LoginResult.Error -> {
+                Toast.makeText(context, mapLoginErrorToMessage(result.message), Toast.LENGTH_LONG).show()
+            }
+        }
+    }
 
     val instructionDownloadLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("*/*")
@@ -398,38 +468,12 @@ fun MainScreen(
             loadingTargetScreen = ScreenType.PENDING
             isLoading = true
             scope.launch {
-                val result = try {
-                    withTimeout(45_000) {
-                        withContext(Dispatchers.IO) {
-                            retryIo { repository.login(savedUser, savedPass) }
-                        }
-                    }
-                } catch (e: TimeoutCancellationException) {
-                    LoginResult.Error("Login timed out. Please try again.")
-                } catch (e: IOException) {
-                    LoginResult.Error("Network error. Please try again.")
-                }
-                
-                withContext(Dispatchers.Main) {
-                    if (result is LoginResult.Success) {
-                        try {
-                            val (pending, submitted, photoBytes) = loadAssignmentsAndProfile(repository)
-                            assignments = pending
-                            historicalAssignments = submitted
-                            loggedInStudentName = repository.getCurrentStudentName()
-                            loggedInStudentPhoto = photoBytes
-                            welcomeStatusMessage = generateWelcomeStatusMessage(
-                                pendingCount = pending.size,
-                                submittedCount = submitted.size,
-                                previousMessage = welcomeStatusMessage
-                            )
-                            isLoggedIn = true
-                        } catch (e: Exception) {
-                            Log.e("MainActivity", "Error fetching assignments: ${e.message}", e)
-                        }
-                    }
-                    isLoading = false
-                }
+                attemptPortalLogin(
+                    usernameInput = savedUser,
+                    passwordInput = savedPass,
+                    saveCredentialsOnSuccess = false
+                )
+                isLoading = false
             }
         } else if (hasPerformedInitialCredentialCheck) {
             isLoading = false
@@ -449,52 +493,11 @@ fun MainScreen(
                     loadingTargetScreen = ScreenType.PENDING
                     isLoading = true
                     scope.launch {
-                        val result = try {
-                            withTimeout(45_000) {
-                                withContext(Dispatchers.IO) {
-                                    val normalizedUser = user.trim().uppercase()
-                                    retryIo { repository.login(normalizedUser, pass) }
-                                }
-                            }
-                        } catch (e: TimeoutCancellationException) {
-                            LoginResult.Error("Login timed out. Please try again.")
-                        } catch (e: IOException) {
-                            LoginResult.Error("Network error. Please try again.")
-                        }
-                        
-                        withContext(Dispatchers.Main) {
-                            when (result) {
-                                is LoginResult.Success -> {
-                                    try {
-                                        val (pending, submitted, photoBytes) = loadAssignmentsAndProfile(repository)
-                                        assignments = pending
-                                        historicalAssignments = submitted
-                                        loggedInStudentName = repository.getCurrentStudentName()
-                                        loggedInStudentPhoto = photoBytes
-                                        welcomeStatusMessage = generateWelcomeStatusMessage(
-                                            pendingCount = pending.size,
-                                            submittedCount = submitted.size,
-                                            previousMessage = welcomeStatusMessage
-                                        )
-                                        isLoggedIn = true
-                                        // Save credentials for future auto-login
-                                        context.saveCredentials(user.trim().uppercase(), pass)
-                                    } catch (e: Exception) {
-                                        Log.e("MainActivity", "Error fetching assignments: ${e.message}", e)
-                                        Toast.makeText(context, "Error loading assignments: ${e.message}", Toast.LENGTH_LONG).show()
-                                    }
-                                }
-                                is LoginResult.InvalidCredentials -> {
-                                    Toast.makeText(context, "Authentication failed. Check your ID/password.", Toast.LENGTH_LONG).show()
-                                }
-                                is LoginResult.CaptchaRequired -> {
-                                    Toast.makeText(context, "Security Verification (CAPTCHA) required. Please log in via browser first.", Toast.LENGTH_LONG).show()
-                                }
-                                is LoginResult.Error -> {
-                                    Toast.makeText(context, mapLoginErrorToMessage(result.message), Toast.LENGTH_LONG).show()
-                                }
-                            }
-                        }
+                        attemptPortalLogin(
+                            usernameInput = user,
+                            passwordInput = pass,
+                            saveCredentialsOnSuccess = true
+                        )
                         isLoading = false
                     }
                 }
@@ -593,17 +596,6 @@ fun MainScreen(
                                     withContext(Dispatchers.Main) {
                                         Toast.makeText(context, "Uploaded Successfully", Toast.LENGTH_SHORT).show()
                                     }
-                                    // Refresh assignments after successful upload
-                                    val (pending, submitted, photoBytes) = loadAssignmentsAndProfile(repository)
-                                    assignments = pending
-                                    historicalAssignments = submitted
-                                    loggedInStudentName = repository.getCurrentStudentName()
-                                    loggedInStudentPhoto = photoBytes
-                                    welcomeStatusMessage = generateWelcomeStatusMessage(
-                                        pendingCount = pending.size,
-                                        submittedCount = submitted.size,
-                                        previousMessage = welcomeStatusMessage
-                                    )
                                 } else {
                                     withContext(Dispatchers.Main) {
                                         val msg = when {
@@ -615,6 +607,20 @@ fun MainScreen(
                                         }
                                         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                                     }
+                                }
+                                runCatching {
+                                    val (pending, submitted, photoBytes) = loadAssignmentsAndProfile(repository)
+                                    assignments = pending
+                                    historicalAssignments = submitted
+                                    loggedInStudentName = repository.getCurrentStudentName()
+                                    loggedInStudentPhoto = photoBytes
+                                    welcomeStatusMessage = generateWelcomeStatusMessage(
+                                        pendingCount = pending.size,
+                                        submittedCount = submitted.size,
+                                        previousMessage = welcomeStatusMessage
+                                    )
+                                }.onFailure { refreshError ->
+                                    Log.e("MainActivity", "Auto-refresh after upload failed: ${refreshError.message}", refreshError)
                                 }
                                 isLoading = false
                             }
@@ -701,17 +707,6 @@ fun MainScreen(
                                     withContext(Dispatchers.Main) {
                                         Toast.makeText(context, "Re-uploaded Successfully", Toast.LENGTH_SHORT).show()
                                     }
-                                    // Refresh assignments after successful re-upload
-                                    val (pending, submitted, photoBytes) = loadAssignmentsAndProfile(repository)
-                                    assignments = pending
-                                    historicalAssignments = submitted
-                                    loggedInStudentName = repository.getCurrentStudentName()
-                                    loggedInStudentPhoto = photoBytes
-                                    welcomeStatusMessage = generateWelcomeStatusMessage(
-                                        pendingCount = pending.size,
-                                        submittedCount = submitted.size,
-                                        previousMessage = welcomeStatusMessage
-                                    )
                                 } else {
                                     withContext(Dispatchers.Main) {
                                         val msg = when {
@@ -724,6 +719,20 @@ fun MainScreen(
                                         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                                     }
                                 }
+                                runCatching {
+                                    val (pending, submitted, photoBytes) = loadAssignmentsAndProfile(repository)
+                                    assignments = pending
+                                    historicalAssignments = submitted
+                                    loggedInStudentName = repository.getCurrentStudentName()
+                                    loggedInStudentPhoto = photoBytes
+                                    welcomeStatusMessage = generateWelcomeStatusMessage(
+                                        pendingCount = pending.size,
+                                        submittedCount = submitted.size,
+                                        previousMessage = welcomeStatusMessage
+                                    )
+                                }.onFailure { refreshError ->
+                                    Log.e("MainActivity", "Auto-refresh after re-upload failed: ${refreshError.message}", refreshError)
+                                }
                                 isLoading = false
                             }
                         }
@@ -731,6 +740,29 @@ fun MainScreen(
                 }
             }
         }
+    }
+
+    if (showCaptchaDialog) {
+        CaptchaWebViewDialog(
+            repository = repository,
+            onDismiss = { showCaptchaDialog = false },
+            onCaptchaSolved = {
+                showCaptchaDialog = false
+                val creds = pendingCaptchaCredentials
+                if (creds != null) {
+                    loadingTargetScreen = ScreenType.PENDING
+                    isLoading = true
+                    scope.launch {
+                        attemptPortalLogin(
+                            usernameInput = creds.first,
+                            passwordInput = creds.second,
+                            saveCredentialsOnSuccess = true
+                        )
+                        isLoading = false
+                    }
+                }
+            }
+        )
     }
 
     val dialogState = instructionFilesDialog
@@ -1242,6 +1274,265 @@ fun LoginScreen(isLoading: Boolean, onLogin: (String, String) -> Unit) {
             }
 
             Spacer(modifier = Modifier.height(32.dp))
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CaptchaWebViewDialog(
+    repository: PortalRepository,
+    onDismiss: () -> Unit,
+    onCaptchaSolved: () -> Unit
+) {
+    val context = LocalContext.current
+    val portalBaseUrl = remember { repository.getPortalBaseUrl() }
+    val loginUrl = remember { repository.getPortalLoginUrl() }
+    val portalHost = remember(loginUrl) { runCatching { loginUrl.toHttpUrl().host }.getOrDefault("") }
+    val loginScheme = remember(loginUrl) { runCatching { loginUrl.toHttpUrl().scheme }.getOrDefault("https") }
+    var pageTitle by remember { mutableStateOf("Security Verification") }
+    var isPageLoading by remember { mutableStateOf(true) }
+    var challengeLooksSolved by remember { mutableStateOf(false) }
+    var challengeEncountered by remember { mutableStateOf(false) }
+    var clearanceCookieSeen by remember { mutableStateOf(false) }
+    var hasAutoSubmitted by remember { mutableStateOf(false) }
+    var autoSubmitJob by remember { mutableStateOf<Job?>(null) }
+    var currentUrl by remember { mutableStateOf(loginUrl) }
+    val autoSubmitScope = rememberCoroutineScope()
+    val webViewRef = remember { mutableStateOf<WebView?>(null) }
+    val webViewUa = remember {
+        runCatching { WebSettings.getDefaultUserAgent(context) }
+            .getOrDefault(com.danycli.assignmentchecker.BuildConfig.PORTAL_USER_AGENT)
+    }
+
+    fun isLikelyChallenge(url: String, title: String): Boolean {
+        val normalizedUrl = url.lowercase()
+        val normalizedTitle = title.lowercase()
+        return normalizedUrl.contains("/cdn-cgi/") ||
+            normalizedUrl.contains("challenge-platform") ||
+            normalizedUrl.contains("captcha") ||
+            normalizedUrl.contains("security") ||
+            normalizedTitle.contains("security verification") ||
+            normalizedTitle.contains("just a moment") ||
+            normalizedTitle.contains("verify you are human")
+    }
+
+    fun isPortalHostUrl(url: String): Boolean {
+        if (portalHost.isBlank()) return false
+        return runCatching { url.toHttpUrl().host.equals(portalHost, ignoreCase = true) }.getOrDefault(false)
+    }
+
+    fun injectCookiesFromCurrentSession(): Int {
+        val manager = CookieManager.getInstance()
+        var totalInjected = 0
+        val targetUrls = linkedSetOf(
+            portalBaseUrl,
+            loginUrl,
+            currentUrl,
+            "$loginScheme://$portalHost"
+        ).filter { it.isNotBlank() }
+        targetUrls.forEach { url ->
+            val cookieHeader = manager.getCookie(url)
+            totalInjected += repository.injectCookiesFromWebView(cookieHeader, url)
+        }
+        return totalInjected
+    }
+
+    fun scheduleAutoContinueIfReady() {
+        if (hasAutoSubmitted || !challengeEncountered || !clearanceCookieSeen || !challengeLooksSolved || !isPortalHostUrl(currentUrl)) {
+            autoSubmitJob?.cancel()
+            autoSubmitJob = null
+            return
+        }
+
+        autoSubmitJob?.cancel()
+        autoSubmitJob = autoSubmitScope.launch {
+            // Let Cloudflare/session cookies settle before submitting to avoid retry loops.
+            delay(2500)
+            if (hasAutoSubmitted || !challengeEncountered || !clearanceCookieSeen || !challengeLooksSolved || !isPortalHostUrl(currentUrl)) {
+                return@launch
+            }
+            repository.setUserAgentForSession(webViewUa)
+            CookieManager.getInstance().flush()
+            val injected = injectCookiesFromCurrentSession()
+            if (injected > 0) {
+                hasAutoSubmitted = true
+                Toast.makeText(context, "Verification completed. Signing in...", Toast.LENGTH_SHORT).show()
+                onCaptchaSolved()
+            }
+        }
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = if (isSystemInDarkTheme()) Color(0xFF101418) else Color.White),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 460.dp, max = 700.dp)
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                TopAppBar(
+                    title = {
+                        Text(
+                            text = pageTitle.ifBlank { "Security Verification" },
+                            maxLines = 1
+                        )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onDismiss) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Close verification"
+                            )
+                        }
+                    },
+                    actions = {
+                        TextButton(onClick = { webViewRef.value?.reload() }) {
+                            Text("Reload")
+                        }
+                    }
+                )
+
+                if (isPageLoading) {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = Cyprus
+                    )
+                }
+
+                AndroidView(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    factory = { viewContext ->
+                        WebView(viewContext).apply {
+                            webViewRef.value = this
+                            settings.javaScriptEnabled = true
+                            settings.domStorageEnabled = true
+                            @Suppress("DEPRECATION")
+                            settings.databaseEnabled = true
+                            settings.cacheMode = WebSettings.LOAD_DEFAULT
+                            settings.userAgentString = webViewUa
+                            settings.javaScriptCanOpenWindowsAutomatically = true
+                            settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                            settings.loadsImagesAutomatically = true
+                            settings.mediaPlaybackRequiresUserGesture = false
+                            settings.builtInZoomControls = false
+                            settings.displayZoomControls = false
+                            CookieManager.getInstance().setAcceptCookie(true)
+                            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                            repository.setUserAgentForSession(webViewUa)
+
+                            webChromeClient = WebChromeClient()
+                            webViewClient = object : WebViewClient() {
+                                override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                                    isPageLoading = true
+                                    autoSubmitJob?.cancel()
+                                    autoSubmitJob = null
+                                    if (!url.isNullOrBlank()) {
+                                        currentUrl = url
+                                        val normalizedUrl = url.lowercase()
+                                        if (normalizedUrl.contains("/cdn-cgi/") || normalizedUrl.contains("challenge-platform")) {
+                                            challengeEncountered = true
+                                        }
+                                    }
+                                    super.onPageStarted(view, url, favicon)
+                                }
+
+                                override fun onPageFinished(view: WebView?, url: String?) {
+                                    if (!url.isNullOrBlank()) {
+                                        currentUrl = url
+                                    }
+                                    pageTitle = view?.title?.takeIf { it.isNotBlank() } ?: "Security Verification"
+                                    isPageLoading = false
+                                    val resolvedUrl = url.orEmpty()
+                                    val resolvedTitle = view?.title.orEmpty()
+                                    val cookieSnapshot = CookieManager.getInstance().getCookie(resolvedUrl)
+                                        ?: CookieManager.getInstance().getCookie(portalBaseUrl)
+                                    val hasClearanceCookie = cookieSnapshot?.contains("cf_clearance=", ignoreCase = true) == true
+                                    val hasChallengeCookie = cookieSnapshot?.let { cookies ->
+                                        cookies.contains("__cf_bm=", ignoreCase = true) ||
+                                            cookies.contains("cf_chl", ignoreCase = true)
+                                    } == true
+                                    val normalizedUrl = resolvedUrl.lowercase()
+                                    val onChallengeEndpoint = normalizedUrl.contains("/cdn-cgi/") ||
+                                        normalizedUrl.contains("challenge-platform")
+                                    val likelyChallenge = isLikelyChallenge(resolvedUrl, resolvedTitle) || onChallengeEndpoint
+                                    if (likelyChallenge || (hasChallengeCookie && !hasClearanceCookie)) {
+                                        challengeEncountered = true
+                                    }
+                                    clearanceCookieSeen = clearanceCookieSeen || hasClearanceCookie
+                                    challengeLooksSolved = isPortalHostUrl(resolvedUrl) &&
+                                        !onChallengeEndpoint &&
+                                        !likelyChallenge &&
+                                        challengeEncountered &&
+                                        clearanceCookieSeen
+                                    injectCookiesFromCurrentSession()
+                                    scheduleAutoContinueIfReady()
+                                    super.onPageFinished(view, url)
+                                }
+
+                                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                                    return false
+                                }
+                            }
+
+                            loadUrl(loginUrl)
+                        }
+                    },
+                    update = { webView ->
+                        webViewRef.value = webView
+                    }
+                )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = onDismiss,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = Cyprus)
+                    ) {
+                        Text("Cancel", color = Color.White)
+                    }
+                }
+
+                if (!challengeLooksSolved) {
+                    Text(
+                        text = "Solve CAPTCHA. Sign-in continues automatically.",
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                        fontSize = 12.sp,
+                        color = Cyprus
+                    )
+                } else if (!hasAutoSubmitted) {
+                    Text(
+                        text = "Verification detected. Completing sign-in...",
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                        fontSize = 12.sp,
+                        color = Cyprus
+                    )
+                }
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            autoSubmitJob?.cancel()
+            autoSubmitJob = null
+            webViewRef.value?.apply {
+                stopLoading()
+                clearHistory()
+                webChromeClient = null
+                webViewClient = WebViewClient()
+                destroy()
+            }
+            webViewRef.value = null
+            CookieManager.getInstance().flush()
         }
     }
 }

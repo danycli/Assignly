@@ -561,6 +561,52 @@ class PortalRepository {
         return doc.select("input[name*=txtUsername], input[id*=txtUsername], input[name*=btnLogin], input[id*=btnLogin]").isNotEmpty()
     }
 
+    private fun hasStandardPortalLoginForm(html: String): Boolean {
+        val doc = Jsoup.parse(html)
+        val hasUserLikeField = doc.select(
+            "input[name*=txtUsername], input[id*=txtUsername], input[name*=RollNo], input[id*=RollNo], " +
+                "input[name*=roll], input[id*=roll]"
+        ).isNotEmpty()
+        val hasPasswordField = doc.select("input[type=password], input[name*=password], input[id*=password]").isNotEmpty()
+        return hasUserLikeField && hasPasswordField
+    }
+
+    private fun isSecurityVerificationPage(url: String?, html: String?): Boolean {
+        val normalizedUrl = url?.lowercase().orEmpty()
+        val normalizedHtml = html?.lowercase().orEmpty()
+
+        val urlSignals = normalizedUrl.contains("/cdn-cgi/") ||
+            normalizedUrl.contains("challenge-platform")
+
+        if (urlSignals) return true
+        if (normalizedHtml.isBlank()) return false
+
+        val hasCloudflareSignals = listOf(
+            "cloudflare",
+            "cf_chl",
+            "cf-browser-verification",
+            "challenge-platform",
+            "cf_clearance",
+            "ray id",
+            "cf-turnstile",
+            "challenges.cloudflare.com"
+        ).any { marker -> normalizedHtml.contains(marker) }
+
+        val hasChallengeLanguage = listOf(
+            "security verification",
+            "verify you are human",
+            "performing security verification",
+            "just a moment",
+            "checking your browser before accessing"
+        ).any { marker -> normalizedHtml.contains(marker) }
+
+        if (hasStandardPortalLoginForm(html.orEmpty())) {
+            return false
+        }
+
+        return hasCloudflareSignals && hasChallengeLanguage
+    }
+
     private fun hasSessionCookiesForHost(host: String): Boolean {
         val cookies = cookieStore[host]?.values ?: return false
         val now = System.currentTimeMillis()
@@ -574,14 +620,76 @@ class PortalRepository {
         }
     }
 
-    private fun clearSessionState() {
+    private fun clearSessionState(preserveSecurityCookies: Boolean = false) {
         synchronized(cookieStore) {
-            cookieStore.clear()
+            if (!preserveSecurityCookies) {
+                cookieStore.clear()
+            } else {
+                val now = System.currentTimeMillis()
+                val preserved = HashMap<String, MutableMap<String, Cookie>>()
+                cookieStore.forEach { (host, cookiesByName) ->
+                    val preservedByName = cookiesByName.values
+                        .filter { cookie ->
+                            cookie.expiresAt > now && (
+                                cookie.name.equals("cf_clearance", true) ||
+                                    cookie.name.equals("__cf_bm", true) ||
+                                    cookie.name.equals("_cfuvid", true) ||
+                                    cookie.name.equals("cf_chl_rc_i", true) ||
+                                    cookie.name.equals("cf_chl_rc_ni", true) ||
+                                    cookie.name.equals("cf_chl_rc_m", true)
+                                )
+                        }
+                        .associateByTo(mutableMapOf()) { it.name }
+                    if (preservedByName.isNotEmpty()) {
+                        preserved[host] = preservedByName
+                    }
+                }
+                cookieStore.clear()
+                cookieStore.putAll(preserved)
+            }
         }
         currentStudentName = null
         currentStudentPhotoUrl = null
         currentStudentPhotoBytes = null
         currentStudentPhotoBytesUrl = null
+    }
+
+    fun injectCookiesFromWebView(rawCookieHeader: String?, sourceUrl: String = baseUrl): Int {
+        if (rawCookieHeader.isNullOrBlank()) return 0
+        val host = runCatching { sourceUrl.toHttpUrl().host }.getOrDefault(baseHost)
+        if (host.isBlank()) return 0
+
+        val parsedCookies = rawCookieHeader
+            .split(";")
+            .mapNotNull { cookieToken ->
+                val pairIndex = cookieToken.indexOf('=')
+                if (pairIndex <= 0) return@mapNotNull null
+                val name = cookieToken.substring(0, pairIndex).trim()
+                if (name.isEmpty()) return@mapNotNull null
+                val value = cookieToken.substring(pairIndex + 1).trim()
+                runCatching {
+                    Cookie.Builder()
+                        .name(name)
+                        .value(value)
+                        .domain(host)
+                        .path("/")
+                        .apply {
+                            if (baseUrl.startsWith("https://", true)) secure()
+                        }
+                        .build()
+                }.getOrNull()
+            }
+
+        if (parsedCookies.isEmpty()) return 0
+
+        synchronized(cookieStore) {
+            val hostCookies = cookieStore.getOrPut(host) { mutableMapOf() }
+            parsedCookies.forEach { cookie ->
+                hostCookies[cookie.name] = cookie
+            }
+        }
+
+        return parsedCookies.size
     }
 
     private val cookieStore = HashMap<String, MutableMap<String, Cookie>>()
@@ -601,37 +709,58 @@ class PortalRepository {
         .build()
 
     private val baseUrl = com.danycli.assignmentchecker.BuildConfig.PORTAL_BASE_URL
-    private val userAgent = com.danycli.assignmentchecker.BuildConfig.PORTAL_USER_AGENT
+    @Volatile
+    private var userAgent = com.danycli.assignmentchecker.BuildConfig.PORTAL_USER_AGENT
     private val baseHost = runCatching { baseUrl.toHttpUrl().host }.getOrDefault("")
+
+    fun getPortalBaseUrl(): String = baseUrl
+    fun getPortalLoginUrl(): String = "$baseUrl/Login.aspx"
+
+    fun setUserAgentForSession(candidate: String?) {
+        val normalized = candidate?.trim().orEmpty()
+        if (normalized.isNotEmpty()) {
+            userAgent = normalized
+            debugLog("Updated session user-agent from WebView")
+        }
+    }
 
     fun login(username: String, password: String): LoginResult {
         return try {
-            val loginUrl = "$baseUrl/Login.aspx"
+            val loginUrl = getPortalLoginUrl()
             val originalUsername = username.trim()
             fun normalizeToken(value: String): String = value.lowercase().replace(Regex("[^a-z0-9]"), "")
             val registrationParts = originalUsername.split("-").map { it.trim() }.filter { it.isNotEmpty() }
             if (registrationParts.size != 3 || password.isBlank()) {
                 return LoginResult.InvalidCredentials
             }
-            clearSessionState()
+            clearSessionState(preserveSecurityCookies = true)
 
             debugLog("=== LOGIN START ===")
             debugLog("Login URL: ${sanitizeUrl(loginUrl)}")
 
             // 1. Initial GET to extraction hidden state tokens and discover field names
             debugLog("Step 1: Fetching login page...")
-            val initialHtml = client.newCall(
+            val initialPayload = client.newCall(
                 Request.Builder().url(loginUrl).header("User-Agent", userAgent).build()
             ).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                val resolvedUrl = response.request.url.toString()
                 if (!response.isSuccessful) {
+                    if (response.code == 403 || response.code == 429 || response.code == 503 || isSecurityVerificationPage(resolvedUrl, body)) {
+                        debugLog("Security verification detected on initial GET (HTTP ${response.code})")
+                        return LoginResult.CaptchaRequired
+                    }
                     return LoginResult.Error("HTTP ${response.code}")
                 }
-                response.body?.string() ?: return LoginResult.Error("Empty server response")
+                if (body.isBlank()) return LoginResult.Error("Empty server response")
+                resolvedUrl to body
             }
+            val initialUrl = initialPayload.first
+            val initialHtml = initialPayload.second
 
             debugLog("Initial page fetched")
 
-            if (initialHtml.contains("captcha", true)) {
+            if (isSecurityVerificationPage(initialUrl, initialHtml)) {
                 debugLog("CAPTCHA detected")
                 return LoginResult.CaptchaRequired
             }
@@ -828,16 +957,22 @@ class PortalRepository {
                 .build()
 
             val finalPayload = client.newCall(postRequest).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                val resolvedUrl = response.request.url.toString()
                 if (!response.isSuccessful) {
+                    if (response.code == 403 || response.code == 429 || response.code == 503 || isSecurityVerificationPage(resolvedUrl, body)) {
+                        debugLog("Security verification detected after login submit (HTTP ${response.code})")
+                        return LoginResult.CaptchaRequired
+                    }
                     return LoginResult.Error("HTTP ${response.code}")
                 }
-                val body = response.body?.string() ?: return LoginResult.Error("Empty server response")
-                response.request.url.toString() to body
+                if (body.isBlank()) return LoginResult.Error("Empty server response")
+                resolvedUrl to body
             }
             val finalUrl = finalPayload.first
             val finalHtml = finalPayload.second
 
-            if (finalHtml.contains("captcha", true) || finalHtml.contains("security verification", true)) {
+            if (isSecurityVerificationPage(finalUrl, finalHtml)) {
                 debugLog("CAPTCHA/security verification detected after login submit")
                 return LoginResult.CaptchaRequired
             }
@@ -858,11 +993,17 @@ class PortalRepository {
                 .header("User-Agent", userAgent)
                 .build()
             val verifyPayload = client.newCall(verifyRequest).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                val resolvedUrl = response.request.url.toString()
                 if (!response.isSuccessful) {
+                    if (response.code == 403 || response.code == 429 || response.code == 503 || isSecurityVerificationPage(resolvedUrl, body)) {
+                        debugLog("Security verification detected on verify page (HTTP ${response.code})")
+                        return LoginResult.CaptchaRequired
+                    }
                     return LoginResult.Error("HTTP ${response.code}")
                 }
-                val body = response.body?.string() ?: return LoginResult.Error("Empty server response")
-                response.request.url.toString() to body
+                if (body.isBlank()) return LoginResult.Error("Empty server response")
+                resolvedUrl to body
             }
             val verifyFinalUrl = verifyPayload.first
             val verifyHtml = verifyPayload.second
@@ -875,7 +1016,7 @@ class PortalRepository {
             currentStudentName = verifiedProfile.name ?: parseStudentNameFromHtml(finalHtml)
             updateCurrentStudentPhotoUrl(parseStudentPhotoUrlFromHtml(verifyHtml, verifyFinalUrl))
 
-            if (verifyHtml.contains("captcha", true) || verifyHtml.contains("security verification", true)) {
+            if (isSecurityVerificationPage(verifyFinalUrl, verifyHtml)) {
                 debugLog("CAPTCHA/security verification detected on verify page")
                 return LoginResult.CaptchaRequired
             }
@@ -1457,12 +1598,26 @@ class PortalRepository {
             // Search for any visible text that might be an error or validation message
             val doc2 = Jsoup.parse(responseHtml)
             val visibleValidationMessages = mutableListOf<String>()
-            
+            fun Element.isLikelyVisible(): Boolean {
+                var node: Element? = this
+                while (node != null) {
+                    val style = node.attr("style").lowercase()
+                    val className = node.className().lowercase()
+                    if (node.hasAttr("hidden")) return false
+                    if (node.attr("aria-hidden").equals("true", ignoreCase = true)) return false
+                    if (style.contains("display:none") || style.contains("visibility:hidden")) return false
+                    if (className.contains("d-none") || className.contains("invisible")) return false
+                    node = node.parent()
+                }
+                return true
+            }
+             
             // Look for spans/divs with "RequiredFieldValidator" or validation class
             val validatorSpans = doc2.select("[id*='Validator']")
             if (validatorSpans.isNotEmpty()) {
                 Log.d("PortalAuth", "Found ${validatorSpans.size} validator elements")
                 validatorSpans.forEach { elem ->
+                    if (!elem.isLikelyVisible()) return@forEach
                     val text = elem.text()
                     if (text.isNotEmpty()) {
                         Log.d("PortalAuth", "  Validator text: $text")
@@ -1476,6 +1631,7 @@ class PortalRepository {
             if (errorDivs.isNotEmpty()) {
                 Log.d("PortalAuth", "Found ${errorDivs.size} error divs")
                 errorDivs.forEach { elem ->
+                    if (!elem.isLikelyVisible()) return@forEach
                     val text = elem.text()
                     if (text.isNotEmpty()) {
                         Log.d("PortalAuth", "  Error div: $text")
@@ -1487,6 +1643,7 @@ class PortalRepository {
             // Look for any summary control
             val summaryControls = doc2.select("[id*='ValidationSummary'], [id*='Summary']")
             summaryControls.forEach { elem ->
+                if (!elem.isLikelyVisible()) return@forEach
                 val text = elem.text()
                 if (text.isNotEmpty()) {
                     Log.d("PortalAuth", "  Summary control: $text")
@@ -1515,9 +1672,12 @@ class PortalRepository {
                 .joinToString(" | ")
                 .lowercase()
                 .replace(Regex("\\s+"), " ")
+            Log.d("PortalAuth", "Visible validation text: $normalizedValidationText")
 
             // Check only visible validation messages to avoid false rejects from static page hints.
-            val hasFormatError = normalizedValidationText.contains("only .zip,.rar,.doc,.docx and .pdf allowed")
+            val hasFormatError = normalizedValidationText.contains("only .zip,.rar,.doc,.docx and .pdf allowed") ||
+                normalizedValidationText.contains("format is not allowed") ||
+                normalizedValidationText.contains("file format is not allowed")
             val hasMissingFileError = normalizedValidationText.contains("required") &&
                 (normalizedValidationText.contains("fileuploadvalidator") || normalizedValidationText.contains("file"))
             val hasInvalidFileError = normalizedValidationText.contains("invalid file")
