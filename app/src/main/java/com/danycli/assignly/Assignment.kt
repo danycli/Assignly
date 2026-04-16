@@ -4,6 +4,16 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+fun isAssignmentDeadlineOpen(deadline: String, now: Date = Date()): Boolean {
+    return try {
+        val sdf = SimpleDateFormat("MMM dd ,yyyy HH:mm", Locale.US)
+        val deadlineDate = sdf.parse(deadline)
+        deadlineDate != null && now.before(deadlineDate)
+    } catch (e: Exception) {
+        false
+    }
+}
+
 enum class AssignmentStatus {
     PENDING, NOT_SUBMITTED_CLOSED, SUBMITTED, GRADED
 }
@@ -20,15 +30,7 @@ data class Assignment(
     val feedback: String? = null
 ) {
     fun isOpen(): Boolean {
-        return try {
-            // Portal format: "Apr 12 ,2026 23:59"
-            val sdf = SimpleDateFormat("MMM dd ,yyyy HH:mm", Locale.US)
-            val deadlineDate = sdf.parse(deadline)
-            val currentDate = Date()
-            deadlineDate != null && currentDate.before(deadlineDate)
-        } catch (e: Exception) {
-            false
-        }
+        return isAssignmentDeadlineOpen(deadline)
     }
     
     fun getOpenClosedLabel(isOpen: Boolean): String = if (isOpen) "Open" else "Closed"

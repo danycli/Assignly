@@ -35,8 +35,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -50,6 +52,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -65,14 +68,20 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToDown
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -102,9 +111,8 @@ import java.io.IOException
 private const val DISCLAIMER_URL = "https://github.com/danycli/Assignly#disclaimer"
 private const val RELEASES_API_URL = "https://api.github.com/repos/danycli/Assignly/releases"
 private const val RELEASES_FALLBACK_URL = "https://github.com/danycli/Assignly/releases/tag/Android_Application"
-private const val CAPTCHA_RETRY_DELAY_MS = 650L
-private const val CAPTCHA_SOLVED_CONTINUE_DELAY_MS = 1300L
-private const val CAPTCHA_NOT_SHOWN_CONTINUE_DELAY_MS = 700L
+private const val CAPTCHA_RETRY_DELAY_MS = 250L
+private const val CAPTCHA_BACKGROUND_RECHECK_ATTEMPTS = 2
 
 private data class AppUpdateInfo(
     val latestVersion: String,
@@ -424,6 +432,12 @@ private fun generateWelcomeStatusMessage(
     }
 }
 
+private fun countSuccessfulSubmissions(assignments: List<Assignment>): Int {
+    return assignments.count { assignment ->
+        assignment.status == AssignmentStatus.SUBMITTED || assignment.status == AssignmentStatus.GRADED
+    }
+}
+
 private data class InstructionFileDialogState(
     val assignment: Assignment,
     val files: List<InstructionFile>
@@ -478,7 +492,7 @@ fun MainScreen(
         loggedInStudentPhoto = photoBytes
         welcomeStatusMessage = generateWelcomeStatusMessage(
             pendingCount = pending.size,
-            submittedCount = submitted.size,
+            submittedCount = countSuccessfulSubmissions(submitted),
             previousMessage = welcomeStatusMessage
         )
     }
@@ -537,10 +551,31 @@ fun MainScreen(
                 LoginResult.Error("Network error. Please try again.")
             }
         }
+        suspend fun isCaptchaStillRequiredInBackground(): Boolean {
+            return try {
+                withTimeout(10_000) {
+                    withContext(Dispatchers.IO) {
+                        retryIo(maxAttempts = 2, initialDelayMs = 250) {
+                            repository.isSecurityVerificationStillRequired()
+                        }
+                    }
+                }
+            } catch (e: TimeoutCancellationException) {
+                true
+            } catch (e: IOException) {
+                true
+            }
+        }
         var result = performLoginRequest()
-        if (result is LoginResult.CaptchaRequired) {
+        var silentCaptchaRechecksRemaining = CAPTCHA_BACKGROUND_RECHECK_ATTEMPTS
+        while (result is LoginResult.CaptchaRequired && silentCaptchaRechecksRemaining > 0) {
+            val captchaStillRequired = isCaptchaStillRequiredInBackground()
+            if (captchaStillRequired) {
+                break
+            }
             delay(CAPTCHA_RETRY_DELAY_MS)
             result = performLoginRequest()
+            silentCaptchaRechecksRemaining--
         }
 
         when (result) {
@@ -800,7 +835,7 @@ fun MainScreen(
                                     loggedInStudentPhoto = photoBytes
                                     welcomeStatusMessage = generateWelcomeStatusMessage(
                                         pendingCount = assignments.size,
-                                        submittedCount = fetched.size,
+                                        submittedCount = countSuccessfulSubmissions(fetched),
                                         previousMessage = welcomeStatusMessage
                                     )
                                     isLoading = false
@@ -1187,7 +1222,7 @@ private fun HistoricalAssignmentsSkeleton() {
             CenterAlignedTopAppBar(
                 title = {
                     Text(
-                        "Submitted Assignments",
+                        "Assignment History",
                         color = Color.White,
                         fontWeight = FontWeight.Bold
                     )
@@ -1569,9 +1604,8 @@ private fun CaptchaWebViewDialog(
     var clearanceCookieSeen by remember { mutableStateOf(false) }
     var hasAutoSubmitted by remember { mutableStateOf(false) }
     var noChallengeBypassReady by remember { mutableStateOf(false) }
-    var autoSubmitJob by remember { mutableStateOf<Job?>(null) }
+    var isCompletingVerification by remember { mutableStateOf(false) }
     var currentUrl by remember { mutableStateOf(loginUrl) }
-    val autoSubmitScope = rememberCoroutineScope()
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
     val webViewUa = remember {
         runCatching { WebSettings.getDefaultUserAgent(context) }
@@ -1616,49 +1650,44 @@ private fun CaptchaWebViewDialog(
         return totalInjected
     }
 
-    fun scheduleAutoContinueIfReady() {
-        if (hasAutoSubmitted || !challengeEncountered || !clearanceCookieSeen || !challengeLooksSolved || !isPortalHostUrl(currentUrl)) {
-            autoSubmitJob?.cancel()
-            autoSubmitJob = null
+    fun completeCaptchaFlow(message: String) {
+        if (hasAutoSubmitted) return
+        repository.setUserAgentForSession(webViewUa)
+        CookieManager.getInstance().flush()
+        val injected = injectCookiesFromCurrentSession()
+        if (injected <= 0) {
+            isCompletingVerification = false
             return
         }
+        hasAutoSubmitted = true
+        isCompletingVerification = true
+        webViewRef.value?.stopLoading()
+        webViewRef.value?.loadUrl("about:blank")
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        onCaptchaSolved()
+    }
 
-        autoSubmitJob?.cancel()
-        autoSubmitJob = autoSubmitScope.launch {
-            // Let Cloudflare/session cookies settle before submitting to avoid retry loops.
-            delay(CAPTCHA_SOLVED_CONTINUE_DELAY_MS)
-            if (hasAutoSubmitted || !challengeEncountered || !clearanceCookieSeen || !challengeLooksSolved || !isPortalHostUrl(currentUrl)) {
-                return@launch
-            }
-            repository.setUserAgentForSession(webViewUa)
-            CookieManager.getInstance().flush()
-            val injected = injectCookiesFromCurrentSession()
-            if (injected > 0) {
-                hasAutoSubmitted = true
-                Toast.makeText(context, "Verification completed. Signing in...", Toast.LENGTH_SHORT).show()
-                onCaptchaSolved()
-            }
+    fun scheduleAutoContinueIfReady() {
+        if (hasAutoSubmitted || !challengeEncountered || !clearanceCookieSeen || !challengeLooksSolved || !isPortalHostUrl(currentUrl)) {
+            isCompletingVerification = false
+            return
         }
+        completeCaptchaFlow("Verification completed. Signing in...")
     }
 
     fun scheduleNoChallengeContinueIfReady() {
         if (hasAutoSubmitted || !noChallengeBypassReady || !isPortalHostUrl(currentUrl)) {
+            isCompletingVerification = false
             return
         }
+        completeCaptchaFlow("No CAPTCHA shown. Continuing sign-in...")
+    }
 
-        autoSubmitJob?.cancel()
-        autoSubmitJob = autoSubmitScope.launch {
-            delay(CAPTCHA_NOT_SHOWN_CONTINUE_DELAY_MS)
-            if (hasAutoSubmitted || !noChallengeBypassReady || !isPortalHostUrl(currentUrl)) {
-                return@launch
-            }
-            repository.setUserAgentForSession(webViewUa)
-            CookieManager.getInstance().flush()
-            injectCookiesFromCurrentSession()
-            hasAutoSubmitted = true
-            Toast.makeText(context, "No CAPTCHA shown. Continuing sign-in...", Toast.LENGTH_SHORT).show()
-            onCaptchaSolved()
-        }
+    fun shouldFinishBeforePortalPaint(targetUrl: String): Boolean {
+        if (hasAutoSubmitted || targetUrl.isBlank()) return false
+        return challengeEncountered &&
+            isPortalHostUrl(targetUrl) &&
+            !isLikelyChallenge(targetUrl, "")
     }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -1699,96 +1728,131 @@ private fun CaptchaWebViewDialog(
                     )
                 }
 
-                AndroidView(
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f),
-                    factory = { viewContext ->
-                        WebView(viewContext).apply {
-                            webViewRef.value = this
-                            settings.javaScriptEnabled = true
-                            settings.domStorageEnabled = true
-                            @Suppress("DEPRECATION")
-                            settings.databaseEnabled = true
-                            settings.cacheMode = WebSettings.LOAD_DEFAULT
-                            settings.userAgentString = webViewUa
-                            settings.javaScriptCanOpenWindowsAutomatically = true
-                            settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                            settings.loadsImagesAutomatically = true
-                            settings.mediaPlaybackRequiresUserGesture = false
-                            settings.builtInZoomControls = false
-                            settings.displayZoomControls = false
-                            CookieManager.getInstance().setAcceptCookie(true)
-                            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-                            repository.setUserAgentForSession(webViewUa)
+                        .weight(1f)
+                ) {
+                    AndroidView(
+                        modifier = Modifier.fillMaxSize(),
+                        factory = { viewContext ->
+                            WebView(viewContext).apply {
+                                webViewRef.value = this
+                                settings.javaScriptEnabled = true
+                                settings.domStorageEnabled = true
+                                @Suppress("DEPRECATION")
+                                settings.databaseEnabled = true
+                                settings.cacheMode = WebSettings.LOAD_DEFAULT
+                                settings.userAgentString = webViewUa
+                                settings.javaScriptCanOpenWindowsAutomatically = true
+                                settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                                settings.loadsImagesAutomatically = true
+                                settings.mediaPlaybackRequiresUserGesture = false
+                                settings.builtInZoomControls = false
+                                settings.displayZoomControls = false
+                                CookieManager.getInstance().setAcceptCookie(true)
+                                CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                                repository.setUserAgentForSession(webViewUa)
 
-                            webChromeClient = WebChromeClient()
-                            webViewClient = object : WebViewClient() {
-                                override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-                                    isPageLoading = true
-                                    noChallengeBypassReady = false
-                                    autoSubmitJob?.cancel()
-                                    autoSubmitJob = null
-                                    if (!url.isNullOrBlank()) {
-                                        currentUrl = url
-                                        val normalizedUrl = url.lowercase()
-                                        if (normalizedUrl.contains("/cdn-cgi/") || normalizedUrl.contains("challenge-platform")) {
+                                webChromeClient = WebChromeClient()
+                                webViewClient = object : WebViewClient() {
+                                    override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                                        isPageLoading = true
+                                        noChallengeBypassReady = false
+                                        if (!url.isNullOrBlank()) {
+                                            currentUrl = url
+                                            val normalizedUrl = url.lowercase()
+                                            if (normalizedUrl.contains("/cdn-cgi/") || normalizedUrl.contains("challenge-platform")) {
+                                                challengeEncountered = true
+                                            }
+                                            val cookieSnapshot = CookieManager.getInstance().getCookie(url)
+                                                ?: CookieManager.getInstance().getCookie(portalBaseUrl)
+                                            val hasClearanceCookie = cookieSnapshot?.contains("cf_clearance=", ignoreCase = true) == true
+                                            clearanceCookieSeen = clearanceCookieSeen || hasClearanceCookie
+                                            if (shouldFinishBeforePortalPaint(url)) {
+                                                completeCaptchaFlow("Verification completed. Signing in...")
+                                            }
+                                        }
+                                        super.onPageStarted(view, url, favicon)
+                                    }
+
+                                    override fun onPageFinished(view: WebView?, url: String?) {
+                                        if (!url.isNullOrBlank()) {
+                                            currentUrl = url
+                                        }
+                                        pageTitle = view?.title?.takeIf { it.isNotBlank() } ?: "Security Verification"
+                                        isPageLoading = false
+                                        val resolvedUrl = url.orEmpty()
+                                        val resolvedTitle = view?.title.orEmpty()
+                                        val cookieSnapshot = CookieManager.getInstance().getCookie(resolvedUrl)
+                                            ?: CookieManager.getInstance().getCookie(portalBaseUrl)
+                                        val hasClearanceCookie = cookieSnapshot?.contains("cf_clearance=", ignoreCase = true) == true
+                                        val hasChallengeCookie = cookieSnapshot?.let { cookies ->
+                                            cookies.contains("__cf_bm=", ignoreCase = true) ||
+                                                cookies.contains("cf_chl", ignoreCase = true)
+                                        } == true
+                                        val normalizedUrl = resolvedUrl.lowercase()
+                                        val onChallengeEndpoint = normalizedUrl.contains("/cdn-cgi/") ||
+                                            normalizedUrl.contains("challenge-platform")
+                                        val likelyChallenge = isLikelyChallenge(resolvedUrl, resolvedTitle) || onChallengeEndpoint
+                                        if (likelyChallenge || (hasChallengeCookie && !hasClearanceCookie)) {
                                             challengeEncountered = true
                                         }
+                                        clearanceCookieSeen = clearanceCookieSeen || hasClearanceCookie
+                                        val portalWithoutChallenge = isPortalHostUrl(resolvedUrl) &&
+                                            !onChallengeEndpoint &&
+                                            !likelyChallenge
+                                        noChallengeBypassReady = !challengeEncountered && portalWithoutChallenge
+                                        challengeLooksSolved = isPortalHostUrl(resolvedUrl) &&
+                                            !onChallengeEndpoint &&
+                                            !likelyChallenge &&
+                                            challengeEncountered &&
+                                            clearanceCookieSeen
+                                        injectCookiesFromCurrentSession()
+                                        scheduleAutoContinueIfReady()
+                                        scheduleNoChallengeContinueIfReady()
+                                        super.onPageFinished(view, url)
                                     }
-                                    super.onPageStarted(view, url, favicon)
+
+                                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                                        val targetUrl = request?.url?.toString().orEmpty()
+                                        if ((request?.isForMainFrame != false) && shouldFinishBeforePortalPaint(targetUrl)) {
+                                            completeCaptchaFlow("Verification completed. Signing in...")
+                                            return true
+                                        }
+                                        return false
+                                    }
                                 }
 
-                                override fun onPageFinished(view: WebView?, url: String?) {
-                                    if (!url.isNullOrBlank()) {
-                                        currentUrl = url
-                                    }
-                                    pageTitle = view?.title?.takeIf { it.isNotBlank() } ?: "Security Verification"
-                                    isPageLoading = false
-                                    val resolvedUrl = url.orEmpty()
-                                    val resolvedTitle = view?.title.orEmpty()
-                                    val cookieSnapshot = CookieManager.getInstance().getCookie(resolvedUrl)
-                                        ?: CookieManager.getInstance().getCookie(portalBaseUrl)
-                                    val hasClearanceCookie = cookieSnapshot?.contains("cf_clearance=", ignoreCase = true) == true
-                                    val hasChallengeCookie = cookieSnapshot?.let { cookies ->
-                                        cookies.contains("__cf_bm=", ignoreCase = true) ||
-                                            cookies.contains("cf_chl", ignoreCase = true)
-                                    } == true
-                                    val normalizedUrl = resolvedUrl.lowercase()
-                                    val onChallengeEndpoint = normalizedUrl.contains("/cdn-cgi/") ||
-                                        normalizedUrl.contains("challenge-platform")
-                                    val likelyChallenge = isLikelyChallenge(resolvedUrl, resolvedTitle) || onChallengeEndpoint
-                                    if (likelyChallenge || (hasChallengeCookie && !hasClearanceCookie)) {
-                                        challengeEncountered = true
-                                    }
-                                    clearanceCookieSeen = clearanceCookieSeen || hasClearanceCookie
-                                    val portalWithoutChallenge = isPortalHostUrl(resolvedUrl) &&
-                                        !onChallengeEndpoint &&
-                                        !likelyChallenge
-                                    noChallengeBypassReady = !challengeEncountered && portalWithoutChallenge
-                                    challengeLooksSolved = isPortalHostUrl(resolvedUrl) &&
-                                        !onChallengeEndpoint &&
-                                        !likelyChallenge &&
-                                        challengeEncountered &&
-                                        clearanceCookieSeen
-                                    injectCookiesFromCurrentSession()
-                                    scheduleAutoContinueIfReady()
-                                    scheduleNoChallengeContinueIfReady()
-                                    super.onPageFinished(view, url)
-                                }
-
-                                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                                    return false
-                                }
+                                loadUrl(loginUrl)
                             }
-
-                            loadUrl(loginUrl)
+                        },
+                        update = { webView ->
+                            webViewRef.value = webView
                         }
-                    },
-                    update = { webView ->
-                        webViewRef.value = webView
+                    )
+
+                    if (isCompletingVerification || hasAutoSubmitted) {
+                        Surface(
+                            modifier = Modifier.fillMaxSize(),
+                            color = if (isSystemInDarkTheme()) Color(0xFF101418) else Color.White
+                        ) {
+                            Column(
+                                modifier = Modifier.fillMaxSize(),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                CircularProgressIndicator(color = Cyprus)
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text(
+                                    text = "Verification completed. Finishing sign-in...",
+                                    color = Cyprus,
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
                     }
-                )
+                }
 
                 Row(
                     modifier = Modifier
@@ -1799,12 +1863,7 @@ private fun CaptchaWebViewDialog(
                     if (noChallengeBypassReady && !hasAutoSubmitted) {
                         OutlinedButton(
                             onClick = {
-                                repository.setUserAgentForSession(webViewUa)
-                                CookieManager.getInstance().flush()
-                                injectCookiesFromCurrentSession()
-                                hasAutoSubmitted = true
-                                Toast.makeText(context, "Continuing sign-in...", Toast.LENGTH_SHORT).show()
-                                onCaptchaSolved()
+                                completeCaptchaFlow("Continuing sign-in...")
                             },
                             modifier = Modifier.weight(1f),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = Cyprus)
@@ -1857,8 +1916,6 @@ private fun CaptchaWebViewDialog(
 
     DisposableEffect(Unit) {
         onDispose {
-            autoSubmitJob?.cancel()
-            autoSubmitJob = null
             webViewRef.value?.apply {
                 stopLoading()
                 clearHistory()
@@ -2007,9 +2064,8 @@ fun AssignmentsList(
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     val pendingAssignmentsCount = assignments.count { it.status == AssignmentStatus.PENDING }
-                                    val closedNotSubmittedCount = assignments.count { it.status == AssignmentStatus.NOT_SUBMITTED_CLOSED }
-                                    val submittedAssignmentsCount = historicalAssignments.size
-                                    val totalAssignmentsCount = pendingAssignmentsCount + closedNotSubmittedCount + submittedAssignmentsCount
+                                    val historyAssignmentsCount = historicalAssignments.size
+                                    val totalAssignmentsCount = pendingAssignmentsCount + historyAssignmentsCount
 
                                     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
                                         Text("$totalAssignmentsCount", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color.White)
@@ -2020,8 +2076,8 @@ fun AssignmentsList(
                                         Text("Pending", fontSize = 11.sp, color = Color.White.copy(alpha = 0.8f))
                                     }
                                     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
-                                        Text("$submittedAssignmentsCount", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
-                                        Text("Submitted", fontSize = 11.sp, color = Color.White.copy(alpha = 0.8f))
+                                        Text("$historyAssignmentsCount", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
+                                        Text("History", fontSize = 11.sp, color = Color.White.copy(alpha = 0.8f))
                                     }
                                 }
                             }
@@ -2140,13 +2196,32 @@ fun HistoricalAssignmentsScreen(
     onDownloadRequested: (Assignment) -> Unit = { _ -> },
     onReuploadRequested: (Assignment, Uri) -> Unit = { _, _ -> }
 ) {
+    var historySearchQuery by remember { mutableStateOf("") }
+    var historySearchFocused by remember { mutableStateOf(false) }
+    val historySearchBorderColor = if (historySearchFocused) Cyprus else Cyprus.copy(alpha = 0.36f)
+    val historySearchElevation = 2.dp
+    val historySearchBorderWidth = 1.2.dp
+    val filteredHistoryAssignments by remember(assignments, historySearchQuery) {
+        derivedStateOf {
+            if (historySearchQuery.isBlank()) {
+                assignments
+            } else {
+                val query = historySearchQuery.trim()
+                assignments.filter { assignment ->
+                    assignment.courseTitle.contains(query, ignoreCase = true) ||
+                        assignment.assignmentTitle.contains(query, ignoreCase = true)
+                }
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
-                title = { 
+                title = {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            "Submitted Assignments",
+                            "Assignment History",
                             color = Color.White,
                             fontWeight = FontWeight.Bold
                         )
@@ -2171,6 +2246,7 @@ fun HistoricalAssignmentsScreen(
         containerColor = Sand
     ) { padding ->
         var selectedAssignment by remember { mutableStateOf<Assignment?>(null) }
+        val focusManager = LocalFocusManager.current
         val launcher = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.GetContent()
         ) { uri ->
@@ -2183,11 +2259,100 @@ fun HistoricalAssignmentsScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(padding)
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Final)
+                            if (event.changes.any { it.changedToDown() }) {
+                                focusManager.clearFocus()
+                            }
+                        }
+                    }
+                },
             contentPadding = PaddingValues(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            if (assignments.isEmpty()) {
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 7.dp),
+                    horizontalArrangement = Arrangement.Start
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .shadow(
+                                elevation = historySearchElevation,
+                                shape = RoundedCornerShape(50.dp),
+                                ambientColor = Cyprus.copy(alpha = 0.10f),
+                                spotColor = Cyprus.copy(alpha = 0.10f)
+                            )
+                            .background(
+                                brush = Brush.linearGradient(
+                                    colors = listOf(
+                                        Color(0xFFFCFBF7),
+                                        Color(0xFFF6F4EE)
+                                    )
+                                ),
+                                shape = RoundedCornerShape(50.dp)
+                            )
+                            .border(
+                                width = historySearchBorderWidth,
+                                color = historySearchBorderColor,
+                                shape = RoundedCornerShape(50.dp)
+                            )
+                            .padding(horizontal = 15.dp, vertical = 18.dp)
+                    ) {
+                        BasicTextField(
+                            value = historySearchQuery,
+                            onValueChange = { historySearchQuery = it },
+                            singleLine = true,
+                            textStyle = LocalTextStyle.current.copy(
+                                color = Color(0xFF222222),
+                                fontSize = 14.sp,
+                                textAlign = TextAlign.Start
+                            ),
+                            cursorBrush = SolidColor(Color(0xFF222222)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .onFocusChanged { historySearchFocused = it.isFocused },
+                            decorationBox = { innerTextField ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Search,
+                                        contentDescription = "Search",
+                                        tint = Color(0xB3222222),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Box(
+                                        modifier = Modifier.weight(1f),
+                                        contentAlignment = Alignment.CenterStart
+                                    ) {
+                                        if (historySearchQuery.isBlank()) {
+                                            Text(
+                                                text = "Search by subject or assignment",
+                                                color = Color(0xCC222222),
+                                                fontSize = 12.sp,
+                                                textAlign = TextAlign.Start,
+                                                maxLines = 1
+                                            )
+                                        }
+                                        innerTextField()
+                                    }
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+
+            if (filteredHistoryAssignments.isEmpty()) {
                 item {
                     Box(
                         modifier = Modifier
@@ -2196,14 +2361,19 @@ fun HistoricalAssignmentsScreen(
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            "No submitted assignments",
+                            if (assignments.isEmpty()) "No assignment history" else "No matching assignments",
                             color = Cyprus.copy(alpha = 0.55f),
                             fontSize = 18.sp
                         )
                     }
                 }
             } else {
-                itemsIndexed(assignments) { index, assignment ->
+                items(
+                    items = filteredHistoryAssignments,
+                    key = { assignment ->
+                        "${assignment.courseTitle}|${assignment.assignmentTitle}|${assignment.deadline}|${assignment.status}"
+                    }
+                ) { assignment ->
                     val isOpenVal = assignment.isOpen()
                     Card(
                         modifier = Modifier
@@ -2244,16 +2414,26 @@ fun HistoricalAssignmentsScreen(
                                     Text(assignment.deadline, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                                 }
                                 Column {
-                                    Text("Submitted:", fontSize = 11.sp, color = Color.Gray)
-                                    Text(assignment.submittedDate ?: "N/A", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                    val isNotSubmitted = assignment.status == AssignmentStatus.NOT_SUBMITTED_CLOSED
+                                    Text(if (isNotSubmitted) "Attempt:" else "Submitted:", fontSize = 11.sp, color = Color.Gray)
+                                    Text(
+                                        if (isNotSubmitted) "Not Submitted" else assignment.submittedDate ?: "N/A",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
                                 }
                                 Column(
                                     horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
                                     Text("Status:", fontSize = 11.sp, color = Color.Gray)
-                                    val statusColor = if (isOpenVal) Color(0xFF4CAF50) else Color(0xFFD32F2F)
+                                    val isNotSubmitted = assignment.status == AssignmentStatus.NOT_SUBMITTED_CLOSED
+                                    val statusColor = when {
+                                        isNotSubmitted -> Color(0xFFD32F2F)
+                                        isOpenVal -> Color(0xFF4CAF50)
+                                        else -> Color(0xFFD32F2F)
+                                    }
                                     Text(
-                                        assignment.getOpenClosedLabel(isOpenVal),
+                                        if (isNotSubmitted) "Not Submitted" else assignment.getOpenClosedLabel(isOpenVal),
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.SemiBold,
                                         color = statusColor

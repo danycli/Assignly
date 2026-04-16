@@ -555,6 +555,18 @@ class PortalRepository {
         }
     }
 
+    private fun resolveAssignmentStateForDeadline(
+        statusState: PortalStatusState,
+        deadline: String
+    ): PortalStatusState {
+        if (isAssignmentDeadlineOpen(deadline)) return statusState
+        return when (statusState) {
+            PortalStatusState.NOT_SUBMITTED,
+            PortalStatusState.UNKNOWN -> PortalStatusState.NOT_SUBMITTED_CLOSED
+            else -> statusState
+        }
+    }
+
     private fun isLoginPage(url: String, html: String): Boolean {
         if (url.contains("Login.aspx", true)) return true
         val doc = Jsoup.parse(html)
@@ -743,6 +755,19 @@ class PortalRepository {
         if (normalized.isNotEmpty()) {
             userAgent = normalized
             debugLog("Updated session user-agent from WebView")
+        }
+    }
+
+    fun isSecurityVerificationStillRequired(): Boolean {
+        val loginUrl = getPortalLoginUrl()
+        val request = Request.Builder()
+            .url(loginUrl)
+            .header("User-Agent", userAgent)
+            .build()
+        return client.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            val resolvedUrl = response.request.url.toString()
+            isSecurityVerificationResponse(response, resolvedUrl, body)
         }
     }
 
@@ -1130,67 +1155,78 @@ class PortalRepository {
             }
             
             Log.d("PortalAuth", "Found assignments table")
-            val rows = table.select("tbody tr")
+            val rows = table.select("tbody tr").ifEmpty { table.select("tr") }
             Log.d("PortalAuth", "Total rows: ${rows.size}")
             
             for (i in 0 until rows.size) {
                 try {
                     val cols = rows[i].select("td")
                     
-                    if (cols.size < 9) {
+                    if (cols.size < 6) {
                         Log.d("PortalAuth", "Row $i: Only ${cols.size} cols, skipping")
                         continue
                     }
                     
-                    val course = cols[1].text().trim()
-                    val title = cols[2].text().trim()
-                    val deadline = cols[4].text().trim()
-                    val statusText = cols[5].text().trim().lowercase()
-                    val downloadLink = extractAssignmentDownloadLink(cols[7])
+                    val course = cols.getOrNull(1)?.text()?.trim().orEmpty()
+                    val title = cols.getOrNull(2)?.text()?.trim().orEmpty()
+                    val deadline = cols.getOrNull(4)?.text()?.trim().orEmpty()
+                    val statusText = cols.getOrNull(5)?.text()?.trim()?.lowercase().orEmpty()
+                    val downloadLink = cols.getOrNull(7)?.let { extractAssignmentDownloadLink(it) }.orEmpty()
                     
                     // Action column may contain submit/change/closed indicators.
-                    val actionElement = cols[8]
-                    val actionText = actionElement.text().trim().lowercase()
-                    val actionLink = extractAssignmentSubmitLink(actionElement, finalUrl)
+                    val actionElement = cols.getOrNull(8)
+                    val actionText = actionElement?.text()?.trim()?.lowercase().orEmpty()
+                    val actionLink = actionElement?.let { extractAssignmentSubmitLink(it, finalUrl) }.orEmpty()
                     val normalizedState = normalizePortalStatusState(statusText, actionText)
+                    val effectiveState = resolveAssignmentStateForDeadline(normalizedState, deadline)
                     
                     Log.d("PortalAuth", "Row $i: Action column - Link: '$actionLink', Text: '$actionText'")
                     
                     // If assignment is closed, there is no usable submit URL.
                     // Otherwise use action link for both pending ("submit")
                     // and submitted-open ("change submitted file") rows.
-                    val submitUrl = if (normalizedState == PortalStatusState.NOT_SUBMITTED_CLOSED || actionText.contains("closed")) "" else actionLink
+                    val submitUrl = if (effectiveState == PortalStatusState.NOT_SUBMITTED_CLOSED || actionText.contains("closed")) "" else actionLink
                     
                     if (course.isEmpty() || title.isEmpty()) continue
                     
                     Log.d("PortalAuth", "Row $i: $course - $title - Status: '$statusText'")
                     Log.d("PortalAuth", "  Final submitUrl: $submitUrl")
                     Log.d("PortalAuth", "  Parsed normalized state: $normalizedState")
+                    Log.d("PortalAuth", "  Effective state: $effectiveState")
 
                     val normalizedSubmitUrl = submitUrl
                     Log.d("PortalAuth", "  Parsed submitUrl: '$normalizedSubmitUrl'")
 
-                    when (normalizedState) {
-                        PortalStatusState.NOT_SUBMITTED, PortalStatusState.NOT_SUBMITTED_CLOSED -> {
-                            val pendingStatus = if (normalizedState == PortalStatusState.NOT_SUBMITTED_CLOSED) {
-                                AssignmentStatus.NOT_SUBMITTED_CLOSED
-                            } else {
-                                AssignmentStatus.PENDING
-                            }
+                    when (effectiveState) {
+                        PortalStatusState.NOT_SUBMITTED -> {
                             pendingAssignments.add(
                                 Assignment(
                                     course, title, deadline,
                                     downloadLink,
                                     normalizedSubmitUrl,
-                                    status = pendingStatus,
+                                    status = AssignmentStatus.PENDING,
                                     submittedDate = null,
                                     grade = null,
                                     feedback = null
                                 )
                             )
                         }
+                        PortalStatusState.NOT_SUBMITTED_CLOSED -> {
+                            submittedAssignments.add(
+                                Assignment(
+                                    course, title, deadline,
+                                    downloadLink,
+                                    normalizedSubmitUrl,
+                                    status = AssignmentStatus.NOT_SUBMITTED_CLOSED,
+                                    submittedDate = null,
+                                    grade = null,
+                                    feedback = null
+                                )
+                            )
+                            Log.d("PortalAuth", "  Added to history as not submitted: course='$course', title='$title'")
+                        }
                         PortalStatusState.SUBMITTED, PortalStatusState.GRADED -> {
-                            val assignmentStatus = if (normalizedState == PortalStatusState.GRADED) {
+                            val assignmentStatus = if (effectiveState == PortalStatusState.GRADED) {
                                 AssignmentStatus.GRADED
                             } else {
                                 AssignmentStatus.SUBMITTED
@@ -1261,37 +1297,46 @@ class PortalRepository {
             val table = doc.select("table[id*='gvPortalSummary']").firstOrNull()
                 ?: doc.select("table.Grid").firstOrNull() ?: return emptyList()
             
-            val rows = table.select("tbody tr")
+            val rows = table.select("tbody tr").ifEmpty { table.select("tr") }
             
             for (i in 0 until rows.size) {
                 try {
                     val cols = rows[i].select("td")
-                    if (cols.size < 9) continue
+                    if (cols.size < 6) continue
                     
-                    val course = cols[1].text().trim()
-                    val title = cols[2].text().trim()
-                    val deadline = cols[4].text().trim()
-                    val statusText = cols[5].text().trim().lowercase()
-                    val downloadLink = extractAssignmentDownloadLink(cols[7])
+                    val course = cols.getOrNull(1)?.text()?.trim().orEmpty()
+                    val title = cols.getOrNull(2)?.text()?.trim().orEmpty()
+                    val deadline = cols.getOrNull(4)?.text()?.trim().orEmpty()
+                    val statusText = cols.getOrNull(5)?.text()?.trim()?.lowercase().orEmpty()
+                    val downloadLink = cols.getOrNull(7)?.let { extractAssignmentDownloadLink(it) }.orEmpty()
                     
-                    val actionText = cols[8].text().trim().lowercase()
-                    val submitLinkHref = extractAssignmentSubmitLink(cols[8], finalUrl)
-                    val submitLink = if (actionText.contains("closed")) {
+                    val actionElement = cols.getOrNull(8)
+                    val actionText = actionElement?.text()?.trim()?.lowercase().orEmpty()
+                    val normalizedState = normalizePortalStatusState(statusText, actionText)
+                    val effectiveState = resolveAssignmentStateForDeadline(normalizedState, deadline)
+                    val submitLinkHref = actionElement?.let { extractAssignmentSubmitLink(it, finalUrl) }.orEmpty()
+                    val submitLink = if (actionText.contains("closed") || effectiveState == PortalStatusState.NOT_SUBMITTED_CLOSED) {
                         ""
                     } else {
                         submitLinkHref
                     }
-                    val normalizedState = normalizePortalStatusState(statusText, actionText)
                     Log.d("PortalAuth", "  Historical row: course='$course', title='$title', actionText='$actionText', submitLink='$submitLink'")
                     
                     if (course.isEmpty()) continue
-                    if (normalizedState != PortalStatusState.SUBMITTED && normalizedState != PortalStatusState.GRADED) continue
+                    if (effectiveState != PortalStatusState.SUBMITTED &&
+                        effectiveState != PortalStatusState.GRADED &&
+                        effectiveState != PortalStatusState.NOT_SUBMITTED_CLOSED
+                    ) continue
                     
                     submitted.add(Assignment(
                         course, title, deadline,
                         downloadLink, submitLink,
-                        status = if (normalizedState == PortalStatusState.GRADED) AssignmentStatus.GRADED else AssignmentStatus.SUBMITTED,
-                        submittedDate = "",
+                        status = when (effectiveState) {
+                            PortalStatusState.GRADED -> AssignmentStatus.GRADED
+                            PortalStatusState.NOT_SUBMITTED_CLOSED -> AssignmentStatus.NOT_SUBMITTED_CLOSED
+                            else -> AssignmentStatus.SUBMITTED
+                        },
+                        submittedDate = if (effectiveState == PortalStatusState.NOT_SUBMITTED_CLOSED) null else "",
                         grade = null,
                         feedback = null
                     ))

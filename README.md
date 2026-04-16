@@ -63,7 +63,7 @@ Upon logging in, a personalised card greets you with:
 
 ### Pending Assignments Table
 
-A horizontally scrollable table surfaces all your pending and not yet submitted assignments:
+A horizontally scrollable table surfaces your currently actionable pending assignments:
 
 | Column | Description |
 |---|---|
@@ -72,7 +72,7 @@ A horizontally scrollable table surfaces all your pending and not yet submitted 
 | `Title` | Assignment name |
 | `Start Date` | When the assignment was posted |
 | `Deadline` | Full deadline with time |
-| `Status` | **Pending** (green) or **Not Submitted / Closed** (red) |
+| `Status` | **Pending** |
 | `Download` | Tap to fetch instruction files |
 | `Submit` | Tap to pick and upload a file |
 
@@ -84,9 +84,9 @@ A tappable card at the top of the assignments list shows at a glance:
 
 - **Total** assignments across all states
 - **Pending** count — highlighted in yellow
-- **Submitted** count — highlighted in green
+- **History** count — highlighted in green
 
-Tapping this card navigates to the full **Submitted Assignments** history screen.
+Tapping this card navigates to the full **Assignment History** screen.
 
 ---
 
@@ -113,11 +113,12 @@ Tapping this card navigates to the full **Submitted Assignments** history screen
 
 ---
 
-### Submitted Assignments Screen
+### Assignment History Screen
 
-A dedicated screen lists everything you have already submitted:
+A dedicated screen lists submitted items and missed closed submissions:
 
-- Shows **course name**, **assignment title**, **deadline**, and **submission date**.
+- Shows **course name**, **assignment title**, **deadline**, and **submission state**.
+- Missed deadlines appear with a **Not Submitted** tag.
 - Colour-coded **Open / Closed** status based on a live deadline comparison.
 - If the deadline is still open, a **"Change File"** button lets you re-upload a corrected submission.
 - A **"Download Instructions"** button remains available regardless of deadline status.
