@@ -13,6 +13,7 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.HashMap
 import java.util.concurrent.TimeUnit
+import kotlin.math.abs
 
 sealed class LoginResult {
     object Success : LoginResult()
@@ -41,6 +42,13 @@ data class InstructionFile(
     val downloadLink: String
 )
 
+data class AttendanceInsight(
+    val courseTitle: String,
+    val theoryPercent: Double?,
+    val labPercent: Double?,
+    val effectivePercent: Double
+)
+
 sealed class InstructionFilesResult {
     data class Success(val files: List<InstructionFile>) : InstructionFilesResult()
     object NetworkError : InstructionFilesResult()
@@ -58,6 +66,11 @@ class PortalRepository {
     private data class PostBackLink(val info: PostBackInfo, val sourcePageUrl: String?)
     private data class HtmlDownloadCandidate(val url: String? = null, val postBackInfo: PostBackInfo? = null)
     private data class StudentProfile(val name: String?, val rollNo: String?, val program: String?)
+    private data class AttendanceColumnMapping(
+        val courseIndex: Int,
+        val theoryPercentIndex: Int,
+        val labPercentIndex: Int?
+    )
 
     private fun debugLog(message: String) {
         if (com.danycli.assignmentchecker.BuildConfig.DEBUG) {
@@ -1258,6 +1271,202 @@ class PortalRepository {
         } catch (e: Exception) {
             Log.e("PortalAuth", "Error fetching: ${e.message}", e)
             Pair(emptyList(), emptyList())
+        }
+    }
+
+    private fun parseAttendancePercent(value: String?): Double? {
+        val normalized = value?.trim().orEmpty()
+        if (normalized.isBlank()) return null
+        val lowered = normalized.lowercase()
+        if (lowered == "na" || lowered == "n/a" || lowered == "-" || lowered == "--") return null
+
+        // Prefer explicit percentage tokens when present.
+        Regex("""(\d+(?:\.\d+)?)\s*%""").find(lowered)?.groupValues?.getOrNull(1)?.toDoubleOrNull()?.let { percent ->
+            return percent.coerceIn(0.0, 100.0)
+        }
+
+        // Support ratio-formatted values like "4/5" by converting to percentage.
+        val ratioMatch = Regex("""^\s*(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*$""").find(lowered)
+        if (ratioMatch != null) {
+            val obtained = ratioMatch.groupValues.getOrNull(1)?.toDoubleOrNull()
+            val total = ratioMatch.groupValues.getOrNull(2)?.toDoubleOrNull()
+            if (obtained != null && total != null && total > 0.0) {
+                return ((obtained / total) * 100.0).coerceIn(0.0, 100.0)
+            }
+        }
+
+        // If the portal gives only a numeric value in a percentage column, accept it as-is.
+        val plainNumeric = Regex("""^\s*(\d+(?:\.\d+)?)\s*$""").find(lowered)?.groupValues?.getOrNull(1)
+            ?.toDoubleOrNull()
+        return plainNumeric?.coerceIn(0.0, 100.0)
+    }
+
+    private fun isAttendanceNaToken(value: String?): Boolean {
+        val lowered = value?.trim()?.lowercase().orEmpty()
+        return lowered == "na" || lowered == "n/a" || lowered == "-" || lowered == "--"
+    }
+
+    private fun isTheoryHeader(header: String): Boolean {
+        return header.contains("theory") ||
+            header.contains("lecture") ||
+            Regex("""\bth\b""").containsMatchIn(header)
+    }
+
+    private fun isLabHeader(header: String): Boolean {
+        return header.contains("lab") ||
+            header.contains("practical") ||
+            Regex("""\bpr\b""").containsMatchIn(header)
+    }
+
+    private fun isPercentHeader(header: String): Boolean {
+        return header.contains("%") ||
+            header.contains("percent") ||
+            header.contains("percentage")
+    }
+
+    private fun pickNearestIndex(targetIndices: List<Int>, candidateIndices: List<Int>): Int? {
+        if (targetIndices.isEmpty() || candidateIndices.isEmpty()) return null
+        return candidateIndices.minByOrNull { candidate ->
+            targetIndices.minOf { target -> abs(candidate - target) }
+        }
+    }
+
+    private fun findAttendanceColumnMapping(table: Element): AttendanceColumnMapping? {
+        val rows = table.select("tr")
+        for (row in rows) {
+            val headerCells = row.select("th, td")
+            if (headerCells.size < 3) continue
+            val normalizedHeaders = headerCells.map { cell ->
+                cell.text().lowercase().replace(Regex("\\s+"), " ").trim()
+            }
+            val firstHeader = normalizedHeaders.firstOrNull().orEmpty()
+            val likelyAttendanceHeaderRow = normalizedHeaders.any { header ->
+                header.contains("attendance") || header.contains("%")
+            } || firstHeader.contains("course") || firstHeader.contains("subject")
+            if (!likelyAttendanceHeaderRow) continue
+
+            val percentIndices = normalizedHeaders.mapIndexedNotNull { index, header ->
+                if (isPercentHeader(header)) index else null
+            }
+            if (percentIndices.isEmpty()) continue
+
+            val theoryHeaderIndices = normalizedHeaders.mapIndexedNotNull { index, header ->
+                if (isTheoryHeader(header)) index else null
+            }
+            val labHeaderIndices = normalizedHeaders.mapIndexedNotNull { index, header ->
+                if (isLabHeader(header)) index else null
+            }
+
+            val theoryPercentIndex = percentIndices.firstOrNull { index ->
+                isTheoryHeader(normalizedHeaders[index])
+            } ?: pickNearestIndex(theoryHeaderIndices, percentIndices)
+            if (theoryPercentIndex == null) continue
+
+            val labPercentIndex = percentIndices.firstOrNull { index ->
+                isLabHeader(normalizedHeaders[index])
+            } ?: pickNearestIndex(labHeaderIndices, percentIndices.filter { it != theoryPercentIndex })
+
+            val courseIndex = normalizedHeaders.indexOfFirst { header ->
+                header.contains("course") ||
+                    header.contains("subject") ||
+                    header.contains("title") ||
+                    header.contains("code")
+            }.takeIf { it >= 0 } ?: 0
+            return AttendanceColumnMapping(
+                courseIndex = courseIndex,
+                theoryPercentIndex = theoryPercentIndex,
+                labPercentIndex = labPercentIndex?.takeIf { it != theoryPercentIndex }
+            )
+        }
+        return null
+    }
+
+    private fun extractAttendanceInsights(html: String): List<AttendanceInsight> {
+        val doc = Jsoup.parse(html)
+        val attendanceInsights = mutableListOf<AttendanceInsight>()
+        val summaryTables = doc.select("table")
+        for (table in summaryTables) {
+            val mapping = findAttendanceColumnMapping(table) ?: continue
+            val rows = table.select("tbody tr").ifEmpty { table.select("tr") }
+            for (row in rows) {
+                val cols = row.select("td")
+                if (cols.isEmpty()) continue
+                val courseName = cols.getOrNull(mapping.courseIndex)?.text()?.trim().orEmpty()
+                val normalizedCourseName = courseName.lowercase()
+                if (courseName.isBlank() ||
+                    courseName.equals("course title", true) ||
+                    courseName.equals("subject", true) ||
+                    normalizedCourseName.contains("hybrid") ||
+                    Regex("""\bhyb\b""").containsMatchIn(normalizedCourseName) ||
+                    normalizedCourseName.contains("total") ||
+                    normalizedCourseName.contains("overall")
+                ) {
+                    continue
+                }
+                val theoryPercent = parseAttendancePercent(cols.getOrNull(mapping.theoryPercentIndex)?.text())
+                val labPercent = mapping.labPercentIndex?.let { index ->
+                    parseAttendancePercent(cols.getOrNull(index)?.text())
+                }
+                val theoryRaw = cols.getOrNull(mapping.theoryPercentIndex)?.text()
+                val labRaw = mapping.labPercentIndex?.let { index -> cols.getOrNull(index)?.text() }
+                if (theoryPercent == null && labPercent == null &&
+                    !isAttendanceNaToken(theoryRaw) &&
+                    !isAttendanceNaToken(labRaw)
+                ) {
+                    continue
+                }
+                val effectivePercent = when {
+                    theoryPercent != null && labPercent != null -> (theoryPercent + labPercent) / 2.0
+                    theoryPercent != null -> theoryPercent
+                    labPercent != null -> labPercent
+                    else -> 100.0
+                }
+                attendanceInsights.add(
+                    AttendanceInsight(
+                        courseTitle = courseName,
+                        theoryPercent = theoryPercent,
+                        labPercent = labPercent,
+                        effectivePercent = effectivePercent
+                    )
+                )
+            }
+            if (attendanceInsights.isNotEmpty()) {
+                break
+            }
+        }
+        return attendanceInsights
+    }
+
+    fun fetchLowestAttendanceInsight(): AttendanceInsight? {
+        return try {
+            val summaryUrl = "$baseUrl/Summary.aspx"
+            val request = Request.Builder()
+                .url(summaryUrl)
+                .header("Referer", "$baseUrl/CoursePortal.aspx")
+                .header("User-Agent", userAgent)
+                .build()
+            val payload = client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.e("PortalAuth", "fetchLowestAttendanceInsight HTTP ${response.code}")
+                    return null
+                }
+                val body = response.body?.string() ?: run {
+                    Log.e("PortalAuth", "fetchLowestAttendanceInsight empty server response")
+                    return null
+                }
+                response.request.url.toString() to body
+            }
+            val finalUrl = payload.first
+            val html = payload.second
+            val notAuthenticated = isLoginPage(finalUrl, html) || !hasSessionCookiesForHost(baseHost)
+            if (notAuthenticated) return null
+
+            val attendanceInsights = extractAttendanceInsights(html)
+            if (attendanceInsights.isEmpty()) return null
+            attendanceInsights.minByOrNull { insight -> insight.effectivePercent }
+        } catch (e: Exception) {
+            Log.e("PortalAuth", "fetchLowestAttendanceInsight error: ${e.message}", e)
+            null
         }
     }
 
