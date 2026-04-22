@@ -14,7 +14,7 @@ Assignly is a custom client designed to interface with the COMSATS University Ab
 
 ### How Your Data Is Handled
 
-* **Direct Connection:** The app communicates directly with the university's servers. Your credentials and academic data (assignments, deadlines, attendance insights, and profile information) are never routed through, collected by, or stored on any intermediate third-party servers.
+* **Direct Connection:** The app communicates directly with the university's portal. Your credentials and academic data (assignments, deadlines, attendance insights, and profile information) are never routed through, collected by, or stored on any intermediate third-party servers.
 
 * **Secure Local Storage:** To keep you logged in and improve your experience, your credentials are saved locally on your device. This data is protected using Android's `EncryptedSharedPreferences`, which utilizes AES-256 encryption to ensure your password cannot be read by other applications.
 
