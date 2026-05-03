@@ -9,11 +9,18 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.io.File
 import java.io.IOException
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.HashMap
+import java.util.Locale
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLException
+import javax.net.ssl.SSLHandshakeException
 import kotlin.math.abs
+import kotlin.random.Random
 
 sealed class LoginResult {
     object Success : LoginResult()
@@ -56,10 +63,24 @@ sealed class InstructionFilesResult {
     data class Error(val message: String) : InstructionFilesResult()
 }
 
+data class LoginPacing(
+    val minDelayMs: Long,
+    val maxDelayMs: Long
+) {
+    fun nextDelayMs(): Long {
+        val min = minDelayMs.coerceAtLeast(0)
+        val max = maxDelayMs.coerceAtLeast(min)
+        return if (max == min) min else Random.nextLong(min, max + 1)
+    }
+}
+
 class PortalRepository {
     private enum class PortalStatusState {
         NOT_SUBMITTED, NOT_SUBMITTED_CLOSED, SUBMITTED, GRADED, UNKNOWN
     }
+
+    private val portalDeadlineFormatter = DateTimeFormatter.ofPattern("MMM dd ,yyyy HH:mm", Locale.US)
+    private val portalDeadlineZoneId = ZoneId.systemDefault()
 
     private val postBackPrefix = "portal-postback:"
     private data class PostBackInfo(val target: String, val argument: String)
@@ -75,6 +96,16 @@ class PortalRepository {
     private fun debugLog(message: String) {
         if (com.danycli.assignmentchecker.BuildConfig.DEBUG) {
             Log.d("PortalAuth", message)
+        }
+    }
+
+    private fun pauseForLoginPacing(pacing: LoginPacing?) {
+        val delayMs = pacing?.nextDelayMs() ?: return
+        if (delayMs <= 0) return
+        try {
+            Thread.sleep(delayMs)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
         }
     }
 
@@ -583,6 +614,16 @@ class PortalRepository {
         }
     }
 
+    private fun isAssignmentDeadlineOpen(deadline: String): Boolean {
+        val deadlineEpoch = runCatching {
+            LocalDateTime.parse(deadline, portalDeadlineFormatter)
+                .atZone(portalDeadlineZoneId)
+                .toInstant()
+                .toEpochMilli()
+        }.getOrNull() ?: return false
+        return System.currentTimeMillis() < deadlineEpoch
+    }
+
     private fun isLoginPage(url: String, html: String): Boolean {
         if (url.contains("Login.aspx", true)) return true
         val doc = Jsoup.parse(html)
@@ -604,7 +645,8 @@ class PortalRepository {
         val normalizedHtml = html?.lowercase().orEmpty()
 
         val urlSignals = normalizedUrl.contains("/cdn-cgi/") ||
-            normalizedUrl.contains("challenge-platform")
+            normalizedUrl.contains("challenge-platform") ||
+            normalizedUrl.startsWith("chrome-error://")
 
         if (urlSignals) return true
         if (normalizedHtml.isBlank()) return false
@@ -627,11 +669,20 @@ class PortalRepository {
             "checking your browser before accessing"
         ).any { marker -> normalizedHtml.contains(marker) }
 
+        val hasConnectionPrivacyLanguage = listOf(
+            "your connection is not private",
+            "privacy error",
+            "net::err_cert",
+            "certificate is not trusted",
+            "certificate has expired",
+            "secure connection failed"
+        ).any { marker -> normalizedHtml.contains(marker) }
+
         if (hasStandardPortalLoginForm(html.orEmpty())) {
             return false
         }
 
-        return hasChallengeArtifacts && hasChallengeLanguage
+        return hasConnectionPrivacyLanguage || (hasChallengeArtifacts && hasChallengeLanguage)
     }
 
     private fun isSecurityVerificationResponse(response: Response, resolvedUrl: String, body: String): Boolean {
@@ -639,7 +690,11 @@ class PortalRepository {
             return true
         }
 
-        val statusCodeSignals = response.code == 403 || response.code == 429 || response.code == 503
+        val statusCodeSignals = response.code == 403 ||
+            response.code == 429 ||
+            response.code == 503 ||
+            response.code == 525 ||
+            response.code == 526
         if (!statusCodeSignals) {
             return false
         }
@@ -655,6 +710,32 @@ class PortalRepository {
         val contentType = response.header("Content-Type").orEmpty().lowercase()
         val isHtmlLike = contentType.contains("text/html") || contentType.contains("application/xhtml")
         return isHtmlLike || body.isNotBlank()
+    }
+
+    private fun isRecoverableSecurityVerificationException(error: Throwable?): Boolean {
+        var current = error
+        while (current != null) {
+            val message = current.message?.lowercase().orEmpty()
+            val isSslException = current is SSLHandshakeException || current is SSLException
+            val privacyWarningSignal = message.contains("your connection is not private") ||
+                message.contains("net::err_cert") ||
+                message.contains("trust anchor") ||
+                message.contains("unable to find valid certification path") ||
+                message.contains("certpathvalidatorexception") ||
+                message.contains("cert path") ||
+                message.contains("peer not authenticated") ||
+                message.contains("hostname") && message.contains("not verified") ||
+                message.contains("ssl handshake") ||
+                (
+                    message.contains("certificate") &&
+                        (message.contains("validation") || message.contains("trust") || message.contains("path"))
+                    )
+            if (isSslException || privacyWarningSignal) {
+                return true
+            }
+            current = current.cause
+        }
+        return false
     }
 
     private fun hasSessionCookiesForHost(host: String): Boolean {
@@ -787,7 +868,7 @@ class PortalRepository {
         }
     }
 
-    fun login(username: String, password: String): LoginResult {
+    fun login(username: String, password: String, pacing: LoginPacing? = null): LoginResult {
         return try {
             val loginUrl = getPortalLoginUrl()
             val originalUsername = username.trim()
@@ -803,6 +884,7 @@ class PortalRepository {
 
             // 1. Initial GET to extraction hidden state tokens and discover field names
             debugLog("Step 1: Fetching login page...")
+            pauseForLoginPacing(pacing)
             val initialPayload = client.newCall(
                 Request.Builder().url(loginUrl).header("User-Agent", userAgent).build()
             ).execute().use { response ->
@@ -827,6 +909,7 @@ class PortalRepository {
             val initialHtml = initialPayload.second
 
             debugLog("Initial page fetched")
+            pauseForLoginPacing(pacing)
 
             if (isSecurityVerificationPage(initialUrl, initialHtml)) {
                 debugLog("CAPTCHA detected")
@@ -1007,6 +1090,7 @@ class PortalRepository {
 
             // 3. POST the login
             debugLog("Step 5: Posting login request...")
+            pauseForLoginPacing(pacing)
             val formAction = form.attr("action")
             val postUrl = when {
                 formAction.isBlank() -> loginUrl
@@ -1059,6 +1143,7 @@ class PortalRepository {
 
             // 4. Success Check: verify by opening a protected page with same cookies.
             debugLog("Step 7: Verifying session on protected page...")
+            pauseForLoginPacing(pacing)
             val verifyUrl = "$baseUrl/CoursePortal.aspx"
             val verifyRequest = Request.Builder()
                 .url(verifyUrl)
@@ -1118,6 +1203,10 @@ class PortalRepository {
                 LoginResult.InvalidCredentials
             }
         } catch (e: Exception) {
+            if (isRecoverableSecurityVerificationException(e)) {
+                debugLog("Connection privacy warning detected during login flow")
+                return LoginResult.CaptchaRequired
+            }
             clearSessionState()
             Log.e("PortalAuth", "Exception during login", e)
             LoginResult.Error(e.message ?: "Network error")
@@ -1865,6 +1954,11 @@ class PortalRepository {
             
             Log.d("PortalAuth", "Response URL: $responseUrl")
             Log.d("PortalAuth", "Response HTML length: ${responseHtml.length}")
+
+            if (isUploadSizeErrorRedirect(responseUrl, responseHtml)) {
+                Log.d("PortalAuth", "Upload failed: redirected to portal upload error page")
+                return UploadResult.Rejected("Upload rejected: file too large.")
+            }
             
             // Log response snippet for debugging
             val lines = responseHtml.split("\n")
@@ -1962,11 +2056,39 @@ class PortalRepository {
             
             val hasViewstate = responseHtml.contains("__VIEWSTATE", ignoreCase = true)
             val hasForm = responseHtml.contains("<form", ignoreCase = true)
-            val normalizedValidationText = visibleValidationMessages
+            val cleanedValidationMessages = visibleValidationMessages
+                .map { message ->
+                    message
+                        .replace(Regex("\\s+"), " ")
+                        .trim()
+                }
+                .filter { it.isNotEmpty() }
+            val normalizedValidationText = cleanedValidationMessages
                 .joinToString(" | ")
                 .lowercase()
                 .replace(Regex("\\s+"), " ")
             Log.d("PortalAuth", "Visible validation text: $normalizedValidationText")
+
+            val portalSizeMessage = cleanedValidationMessages.firstOrNull { message ->
+                val normalized = message.lowercase()
+                val hasSizeToken = normalized.contains("size") || normalized.contains("mb") || normalized.contains("kb")
+                val hasLimitToken = normalized.contains("max") ||
+                    normalized.contains("maximum") ||
+                    normalized.contains("limit") ||
+                    normalized.contains("exceed") ||
+                    normalized.contains("less than")
+                hasSizeToken && hasLimitToken
+            }
+            val portalValidationErrorMessage = cleanedValidationMessages.firstOrNull { message ->
+                val normalized = message.lowercase()
+                normalized.contains("required") ||
+                    normalized.contains("invalid") ||
+                    normalized.contains("not allowed") ||
+                    normalized.contains("closed") ||
+                    normalized.contains("too large") ||
+                    normalized.contains("maximum") ||
+                    normalized.contains("exceed")
+            }
 
             // Check only visible validation messages to avoid false rejects from static page hints.
             val hasFormatError = normalizedValidationText.contains("only .zip,.rar,.doc,.docx and .pdf allowed") ||
@@ -1975,10 +2097,22 @@ class PortalRepository {
             val hasMissingFileError = normalizedValidationText.contains("required") &&
                 (normalizedValidationText.contains("fileuploadvalidator") || normalizedValidationText.contains("file"))
             val hasInvalidFileError = normalizedValidationText.contains("invalid file")
-            val hasSizeError = normalizedValidationText.contains("maximum") && normalizedValidationText.contains("size")
+            val hasSizeError = (normalizedValidationText.contains("size") &&
+                (normalizedValidationText.contains("maximum") ||
+                    normalizedValidationText.contains("max") ||
+                    normalizedValidationText.contains("limit") ||
+                    normalizedValidationText.contains("exceed") ||
+                    normalizedValidationText.contains("less than"))) ||
+                portalSizeMessage != null
             val hasClosedError = normalizedValidationText.contains("closed") && normalizedValidationText.contains("assignment")
+            val hasGenericPortalError = portalValidationErrorMessage != null
 
-            val hasError = hasFormatError || hasMissingFileError || hasInvalidFileError || hasSizeError || hasClosedError
+            val hasError = hasFormatError ||
+                hasMissingFileError ||
+                hasInvalidFileError ||
+                hasSizeError ||
+                hasClosedError ||
+                hasGenericPortalError
 
             val rejectionReason = when {
                 hasFormatError ->
@@ -1988,9 +2122,11 @@ class PortalRepository {
                 hasInvalidFileError ->
                     "Upload rejected: invalid file."
                 hasSizeError ->
-                    "Upload rejected: file too large."
+                    portalSizeMessage?.let { "Upload rejected: $it" } ?: "Upload rejected: file too large."
                 hasClosedError ->
                     "Upload rejected: assignment is closed."
+                hasGenericPortalError ->
+                    "Upload rejected: $portalValidationErrorMessage"
                 else -> "Upload rejected by server."
             }
             
@@ -2003,19 +2139,19 @@ class PortalRepository {
             Log.d("PortalAuth", "  Response length: ${responseHtml.length}")
             
             // Success detection logic:
-            // 1. If we got a valid HTML page with form and viewstate = likely success
-            // 2. If no file input field AND form reloaded = success
-            // 3. If explicit success message = success
-            // 4. If no actual error found AND page reloaded = success
+            // 1. Any visible validation error from portal = reject
+            // 2. Explicit success message = success
+            // 3. If no file input field AND form reloaded = success
+            // 4. If we got a valid HTML page with form and viewstate = likely success
             
             val successProof = when {
-                hasSuccessMessage -> {
-                    Log.d("PortalAuth", "Success: Found success message")
-                    "Server returned explicit success confirmation."
-                }
                 hasError -> {
                     Log.d("PortalAuth", "Failed: Found error message")
                     null
+                }
+                hasSuccessMessage -> {
+                    Log.d("PortalAuth", "Success: Found success message")
+                    "Server returned explicit success confirmation."
                 }
                 !hasFileInput && hasViewstate && hasForm -> {
                     Log.d("PortalAuth", "Success: File input disappeared and page reloaded")
@@ -2045,6 +2181,29 @@ class PortalRepository {
             e.printStackTrace()
             if (e is IOException) UploadResult.NetworkError else UploadResult.Error(e.message ?: "Upload failed.")
         }
+    }
+
+    private fun isUploadSizeErrorRedirect(responseUrl: String, responseHtml: String): Boolean {
+        val parsed = runCatching { responseUrl.toHttpUrl() }.getOrNull()
+        val path = parsed?.encodedPath.orEmpty().lowercase()
+        val aspxErrorPath = parsed?.queryParameter("aspxerrorpath").orEmpty().lowercase()
+        val normalizedUrl = responseUrl.lowercase()
+        val normalizedHtml = responseHtml.lowercase()
+
+        val isPortalUploadErrorPath = (
+            (path.endsWith("/error.html") || normalizedUrl.contains("/error.html")) &&
+                (aspxErrorPath.contains("courseportalsubmitassignment.aspx") ||
+                    normalizedUrl.contains("aspxerrorpath=%2fcourseportalsubmitassignment.aspx") ||
+                    normalizedUrl.contains("aspxerrorpath=/courseportalsubmitassignment.aspx"))
+            )
+
+        if (isPortalUploadErrorPath) return true
+
+        val hasPortalSizeMessage = normalizedHtml.contains("maximum request length exceeded") ||
+            normalizedHtml.contains("request entity too large") ||
+            (normalizedHtml.contains("file") && normalizedHtml.contains("too large"))
+
+        return hasPortalSizeMessage
     }
 
     private fun extractRedirectUrlFromHtml(html: String): String? {

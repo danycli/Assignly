@@ -28,6 +28,11 @@ private fun resolveDeadlineEpoch(deadline: String): Long {
     return deadlineEpochCache[deadline] ?: parsed
 }
 
+fun assignmentDeadlineEpoch(deadline: String): Long? {
+    val epoch = resolveDeadlineEpoch(deadline)
+    return if (epoch == INVALID_DEADLINE_EPOCH_MS) null else epoch
+}
+
 fun isAssignmentDeadlineOpen(deadline: String, now: Date = Date()): Boolean {
     val deadlineEpoch = resolveDeadlineEpoch(deadline)
     return deadlineEpoch != INVALID_DEADLINE_EPOCH_MS && now.time < deadlineEpoch

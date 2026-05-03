@@ -59,6 +59,7 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.jsoup)
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation(libs.androidx.work.runtime.ktx)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

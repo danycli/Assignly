@@ -2,6 +2,7 @@ package com.danycli.assignmentchecker
 
 import android.content.Context
 import android.graphics.BitmapFactory
+import android.net.http.SslError
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
@@ -9,12 +10,11 @@ import android.widget.Toast
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.SslErrorHandler
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -112,12 +112,12 @@ private const val RELEASES_API_URL = "https://api.github.com/repos/danycli/Assig
 private const val RELEASES_FALLBACK_URL = "https://github.com/danycli/Assignly/releases/tag/Android_Application"
 private const val CAPTCHA_RETRY_DELAY_MS = 250L
 private const val CAPTCHA_BACKGROUND_RECHECK_ATTEMPTS = 2
-private val explicitVersionRegex = Regex("(?i)(?:^|[^A-Za-z0-9])v(\\d+(?:\\.\\d+)*)\\b")
-private val anyVersionTokenRegex = Regex("\\b(\\d+(?:\\.\\d+)*)\\b")
-private val strictVersionRegex = Regex("^\\d+(?:\\.\\d+)*$")
+private val explicitVersionCodeRegex = Regex("(?i)\\b(?:version\\s*code|versioncode|vc)\\s*[:#-]*\\s*(\\d+)\\b")
+private val shortVersionCodeRegex = Regex("(?i)\\bvc(\\d+)\\b")
 
 private data class AppUpdateInfo(
-    val latestVersion: String,
+    val latestVersionCode: Int,
+    val displayLabel: String,
     val releaseUrl: String
 )
 
@@ -144,7 +144,7 @@ private fun AppEntry(repository: PortalRepository) {
     LaunchedEffect(Unit) {
         val splashStart = System.currentTimeMillis()
         startupCredentials = withContext(Dispatchers.IO) {
-            context.getSavedCredentials()
+            CredentialsStore.get(context)
         }
         val elapsedMs = System.currentTimeMillis() - splashStart
         val remainingMs = 1_000L - elapsedMs
@@ -193,75 +193,6 @@ private fun AppSplashScreen() {
     }
 }
 
-// Helper functions for session management
-private fun Context.securePrefs() : android.content.SharedPreferences {
-    val masterKey = MasterKey.Builder(this)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
-    return EncryptedSharedPreferences.create(
-        this,
-        "secure_app_prefs",
-        masterKey,
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-    )
-}
-
-private fun Context.migratePlaintextCredentialsIfNeeded() {
-    val legacyPrefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
-    val secure = securePrefs()
-    val alreadyMigrated = secure.getBoolean("credentials_migrated", false)
-    if (alreadyMigrated) {
-        legacyPrefs.edit().remove("saved_username").remove("saved_password").apply()
-        return
-    }
-
-    val legacyUsername = legacyPrefs.getString("saved_username", null)
-    val legacyPassword = legacyPrefs.getString("saved_password", null)
-    if (!legacyUsername.isNullOrBlank() && !legacyPassword.isNullOrBlank()) {
-        secure.edit()
-            .putString("saved_username", legacyUsername)
-            .putString("saved_password", legacyPassword)
-            .putBoolean("credentials_migrated", true)
-            .apply()
-    } else {
-        secure.edit().putBoolean("credentials_migrated", true).apply()
-    }
-
-    legacyPrefs.edit().remove("saved_username").remove("saved_password").apply()
-}
-
-fun Context.saveCredentials(username: String, password: String) {
-    migratePlaintextCredentialsIfNeeded()
-    val prefs = securePrefs()
-    prefs.edit().apply {
-        putString("saved_username", username)
-        putString("saved_password", password)
-        apply()
-    }
-}
-
-fun Context.getSavedCredentials(): Pair<String, String>? {
-    migratePlaintextCredentialsIfNeeded()
-    val prefs = securePrefs()
-    val username = prefs.getString("saved_username", null)
-    val password = prefs.getString("saved_password", null)
-    return if (username != null && password != null) Pair(username, password) else null
-}
-
-fun Context.clearCredentials() {
-    val secure = securePrefs()
-    secure.edit()
-        .remove("saved_username")
-        .remove("saved_password")
-        .apply()
-    getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
-        .edit()
-        .remove("saved_username")
-        .remove("saved_password")
-        .apply()
-}
-
 private suspend fun <T> retryIo(
     maxAttempts: Int = 3,
     initialDelayMs: Long = 500,
@@ -285,6 +216,8 @@ private fun mapLoginErrorToMessage(message: String?): String {
     val m = message?.lowercase().orEmpty()
     return when {
         m.contains("timed out") -> "Server timeout. Please try again."
+        m.contains("ssl") || m.contains("certificate") || m.contains("trust anchor") || m.contains("net::err_cert") ->
+            "Connection security warning detected. Complete verification in-app, then sign in again."
         m.contains("network") || m.contains("unable to resolve host") || m.contains("failed to connect") ->
             "Network unavailable. Check your internet connection."
         m.contains("invalid id or password") || m.contains("invalid credentials") || m.contains("http 401") || m.contains("http 403") ->
@@ -293,43 +226,20 @@ private fun mapLoginErrorToMessage(message: String?): String {
     }
 }
 
-private fun extractVersionToken(value: String?): String? {
+private fun extractReleaseVersionCode(value: String?): Int? {
     if (value.isNullOrBlank()) return null
-    val withPrefix = explicitVersionRegex.find(value)?.groupValues?.getOrNull(1)
-    if (!withPrefix.isNullOrBlank()) return withPrefix
-    return anyVersionTokenRegex.find(value)?.groupValues?.getOrNull(1)
-}
-
-private fun extractReleaseVersionToken(value: String?): String? {
-    if (value.isNullOrBlank()) return null
-    val withPrefix = explicitVersionRegex.find(value)?.groupValues?.getOrNull(1)
-    if (!withPrefix.isNullOrBlank()) return withPrefix
-    val trimmed = value.trim()
-    return trimmed.takeIf { strictVersionRegex.matches(it) }
-}
-
-private fun compareVersionTokens(left: String, right: String): Int {
-    val leftParts = left.split(".").map { it.toIntOrNull() ?: 0 }
-    val rightParts = right.split(".").map { it.toIntOrNull() ?: 0 }
-    val max = maxOf(leftParts.size, rightParts.size)
-    for (index in 0 until max) {
-        val l = leftParts.getOrElse(index) { 0 }
-        val r = rightParts.getOrElse(index) { 0 }
-        if (l != r) return l.compareTo(r)
-    }
-    return 0
-}
-
-private fun isRemoteVersionNewer(localVersionName: String, remoteVersion: String): Boolean {
-    val localToken = extractVersionToken(localVersionName) ?: return false
-    val remoteToken = extractVersionToken(remoteVersion) ?: return false
-    return compareVersionTokens(remoteToken, localToken) > 0
+    val explicitMatch = explicitVersionCodeRegex.find(value)?.groupValues?.getOrNull(1)
+        ?.toIntOrNull()
+    if (explicitMatch != null) return explicitMatch
+    return shortVersionCodeRegex.find(value)?.groupValues?.getOrNull(1)
+        ?.toIntOrNull()
 }
 
 private fun parseLatestReleaseInfo(json: String): AppUpdateInfo? {
     return try {
         val releases = JSONArray(json)
-        var bestVersion: String? = null
+        var bestVersionCode: Int? = null
+        var bestLabel: String? = null
         var bestUrl: String? = null
 
         for (index in 0 until releases.length()) {
@@ -338,19 +248,24 @@ private fun parseLatestReleaseInfo(json: String): AppUpdateInfo? {
 
             val tagName = release.optString("tag_name")
             val releaseName = release.optString("name")
-            val parsedVersion = extractReleaseVersionToken(tagName)
-                ?: extractReleaseVersionToken(releaseName)
+            val releaseBody = release.optString("body")
+            val parsedVersionCode = extractReleaseVersionCode(tagName)
+                ?: extractReleaseVersionCode(releaseName)
+                ?: extractReleaseVersionCode(releaseBody)
                 ?: continue
             val releaseUrl = release.optString("html_url").ifBlank { RELEASES_FALLBACK_URL }
+            val displayLabel = releaseName.ifBlank { tagName }.ifBlank { "v$parsedVersionCode" }
 
-            if (bestVersion == null || compareVersionTokens(parsedVersion, bestVersion) > 0) {
-                bestVersion = parsedVersion
+            if (bestVersionCode == null || parsedVersionCode > bestVersionCode) {
+                bestVersionCode = parsedVersionCode
+                bestLabel = displayLabel
                 bestUrl = releaseUrl
             }
         }
 
-        if (bestVersion == null) null else AppUpdateInfo(
-            latestVersion = bestVersion,
+        if (bestVersionCode == null) null else AppUpdateInfo(
+            latestVersionCode = bestVersionCode,
+            displayLabel = bestLabel ?: "v$bestVersionCode",
             releaseUrl = bestUrl ?: RELEASES_FALLBACK_URL
         )
     } catch (e: JSONException) {
@@ -515,7 +430,7 @@ fun MainScreen(
     var selectedInstructionFile by remember { mutableStateOf<InstructionFile?>(null) }
     var pendingCaptchaCredentials by remember { mutableStateOf<Pair<String, String>?>(null) }
     var showCaptchaDialog by remember { mutableStateOf(false) }
-    var shownUpdateVersion by remember { mutableStateOf<String?>(null) }
+    var shownUpdateVersionCode by remember { mutableStateOf<Int?>(null) }
     var updateDialogInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
     var pendingExitConfirmation by remember { mutableStateOf(false) }
     var isPendingRefreshing by remember { mutableStateOf(false) }
@@ -543,15 +458,15 @@ fun MainScreen(
     }
 
     suspend fun checkForAppUpdateIfNeeded() {
-        val localVersion = com.danycli.assignmentchecker.BuildConfig.VERSION_NAME
+        val localVersionCode = com.danycli.assignmentchecker.BuildConfig.VERSION_CODE
         val remoteInfo = withContext(Dispatchers.IO) { fetchAppUpdateInfo() } ?: return
-        if (shownUpdateVersion == remoteInfo.latestVersion) return
-        if (!isRemoteVersionNewer(localVersion, remoteInfo.latestVersion)) {
+        if (shownUpdateVersionCode == remoteInfo.latestVersionCode) return
+        if (remoteInfo.latestVersionCode <= localVersionCode) {
             updateDialogInfo = null
             return
         }
         updateDialogInfo = remoteInfo
-        shownUpdateVersion = remoteInfo.latestVersion
+        shownUpdateVersionCode = remoteInfo.latestVersionCode
     }
 
     suspend fun syncWebViewSessionIntoRepository() {
@@ -664,7 +579,7 @@ fun MainScreen(
                     refreshAssignmentsState()
                     isLoggedIn = true
                     if (saveCredentialsOnSuccess) {
-                        context.saveCredentials(normalizedUser, passwordInput)
+                        CredentialsStore.save(context, normalizedUser, passwordInput)
                     }
                     scope.launch {
                         checkForAppUpdateIfNeeded()
@@ -682,7 +597,7 @@ fun MainScreen(
             is LoginResult.CaptchaRequired -> {
                 pendingCaptchaCredentials = normalizedUser to passwordInput
                 showCaptchaDialog = true
-                Toast.makeText(context, "Security verification required. Complete CAPTCHA in-app, then continue.", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "Security check required. Complete verification in-app, then continue.", Toast.LENGTH_LONG).show()
             }
             is LoginResult.Error -> {
                 Toast.makeText(context, mapLoginErrorToMessage(result.message), Toast.LENGTH_LONG).show()
@@ -740,11 +655,11 @@ fun MainScreen(
     
     // Try auto-login on app startup
     LaunchedEffect(Unit) {
-        val savedCreds = if (hasPerformedInitialCredentialCheck) {
-            initialCredentials
-        } else {
-            context.getSavedCredentials()
-        }
+            val savedCreds = if (hasPerformedInitialCredentialCheck) {
+                initialCredentials
+            } else {
+                CredentialsStore.get(context)
+            }
         if (savedCreds != null) {
             val (savedUser, savedPass) = savedCreds
             loadingTargetScreen = ScreenType.PENDING
@@ -827,7 +742,7 @@ fun MainScreen(
                                 welcomeStatusMessage = "Your professors are still thinking how to annoy you in a brutal way possible."
                                 attendanceInsightMessage = null
                                 currentScreen = ScreenType.PENDING
-                                context.clearCredentials()
+                                CredentialsStore.clear(context)
                             },
                             onDownloadRequested = { assignment ->
                                 loadingTargetScreen = ScreenType.PENDING
@@ -1078,7 +993,7 @@ fun MainScreen(
                         }
                     }
                     Text(
-                        text = "A newer version (v${updateInfo.latestVersion}) is available.",
+                        text = "A newer version (${updateInfo.displayLabel}) is available.",
                         color = Color(0xFF2E2E2E),
                         fontSize = 14.sp
                     )
@@ -1687,6 +1602,8 @@ private fun CaptchaWebViewDialog(
     var isCompletingVerification by remember { mutableStateOf(false) }
     var currentUrl by remember { mutableStateOf(loginUrl) }
     var shouldRenderWebView by remember { mutableStateOf(false) }
+    var pendingSslError by remember { mutableStateOf<SslError?>(null) }
+    var pendingSslHandler by remember { mutableStateOf<SslErrorHandler?>(null) }
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
     val webViewUa = remember {
         runCatching { WebSettings.getDefaultUserAgent(context) }
@@ -1700,9 +1617,17 @@ private fun CaptchaWebViewDialog(
             normalizedUrl.contains("challenge-platform") ||
             normalizedUrl.contains("captcha") ||
             normalizedUrl.contains("security") ||
+            normalizedUrl.startsWith("chrome-error://") ||
+            normalizedTitle.contains("your connection is not private") ||
+            normalizedTitle.contains("privacy error") ||
             normalizedTitle.contains("security verification") ||
             normalizedTitle.contains("just a moment") ||
             normalizedTitle.contains("verify you are human")
+    }
+
+    fun sslWarningMessage(error: SslError?): String {
+        val blockedUrl = error?.url?.takeIf { it.isNotBlank() } ?: currentUrl
+        return "This network is showing a connection privacy warning for $blockedUrl. Continue only if you trust this network."
     }
 
     fun isPortalHostUrl(url: String): Boolean {
@@ -1782,6 +1707,13 @@ private fun CaptchaWebViewDialog(
         completeCaptchaFlow(showToast = false)
     }
 
+    fun dismissVerificationDialog() {
+        pendingSslHandler?.cancel()
+        pendingSslHandler = null
+        pendingSslError = null
+        onDismiss()
+    }
+
     fun shouldFinishBeforePortalPaint(targetUrl: String): Boolean {
         if (hasAutoSubmitted || targetUrl.isBlank()) return false
         return challengeEncountered &&
@@ -1798,7 +1730,7 @@ private fun CaptchaWebViewDialog(
         shouldRenderWebView = true
     }
 
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(onDismissRequest = ::dismissVerificationDialog) {
         Card(
             shape = RoundedCornerShape(18.dp),
             colors = CardDefaults.cardColors(containerColor = if (isSystemInDarkTheme()) Color(0xFF101418) else Color.White),
@@ -1815,7 +1747,7 @@ private fun CaptchaWebViewDialog(
                         )
                     },
                     navigationIcon = {
-                        IconButton(onClick = onDismiss) {
+                        IconButton(onClick = ::dismissVerificationDialog) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                                 contentDescription = "Close verification"
@@ -1868,6 +1800,8 @@ private fun CaptchaWebViewDialog(
                                         override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                                             isPageLoading = true
                                             noChallengeBypassReady = false
+                                            pendingSslHandler = null
+                                            pendingSslError = null
                                             if (!url.isNullOrBlank()) {
                                                 currentUrl = url
                                                 val normalizedUrl = url.lowercase()
@@ -1930,6 +1864,23 @@ private fun CaptchaWebViewDialog(
                                                 return true
                                             }
                                             return false
+                                        }
+
+                                        override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
+                                            if (handler == null) return
+                                            isPageLoading = false
+                                            isCompletingVerification = false
+                                            challengeEncountered = true
+                                            challengeLooksSolved = false
+                                            noChallengeBypassReady = false
+                                            val blockedUrl = error?.url
+                                            if (!blockedUrl.isNullOrBlank()) {
+                                                currentUrl = blockedUrl
+                                            }
+                                            pageTitle = "Connection warning"
+                                            pendingSslHandler?.cancel()
+                                            pendingSslError = error
+                                            pendingSslHandler = handler
                                         }
                                     }
                                     loadUrl(loginUrl)
@@ -1999,7 +1950,7 @@ private fun CaptchaWebViewDialog(
                             Text("Continue")
                         }
                         Button(
-                            onClick = onDismiss,
+                            onClick = ::dismissVerificationDialog,
                             modifier = Modifier.weight(1f),
                             colors = ButtonDefaults.buttonColors(containerColor = Cyprus)
                         ) {
@@ -2007,7 +1958,7 @@ private fun CaptchaWebViewDialog(
                         }
                     } else {
                         Button(
-                            onClick = onDismiss,
+                            onClick = ::dismissVerificationDialog,
                             modifier = Modifier.fillMaxWidth(),
                             colors = ButtonDefaults.buttonColors(containerColor = Cyprus)
                         ) {
@@ -2018,14 +1969,14 @@ private fun CaptchaWebViewDialog(
 
                 if (noChallengeBypassReady && !hasAutoSubmitted) {
                     Text(
-                        text = "No CAPTCHA prompt detected. Sign-in continues automatically.",
+                        text = "No security check prompt detected. Sign-in continues automatically.",
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
                         fontSize = 12.sp,
                         color = Cyprus
                     )
                 } else if (!challengeLooksSolved) {
                     Text(
-                        text = "Solve CAPTCHA. Sign-in continues automatically.",
+                        text = "Complete verification. Sign-in continues automatically.",
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
                         fontSize = 12.sp,
                         color = Cyprus
@@ -2042,8 +1993,49 @@ private fun CaptchaWebViewDialog(
         }
     }
 
+    pendingSslHandler?.let { sslHandler ->
+        AlertDialog(
+            onDismissRequest = {
+                sslHandler.cancel()
+                pendingSslHandler = null
+                pendingSslError = null
+            },
+            title = { Text("Your connection is not private", color = Cyprus) },
+            text = {
+                Text(
+                    text = sslWarningMessage(pendingSslError),
+                    color = if (isSystemInDarkTheme()) Color(0xFFE5EAF0) else Color(0xFF2E2E2E)
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingSslHandler?.proceed()
+                        pendingSslHandler = null
+                        pendingSslError = null
+                        isPageLoading = true
+                    }
+                ) {
+                    Text("Continue")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        pendingSslHandler?.cancel()
+                        pendingSslHandler = null
+                        pendingSslError = null
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     DisposableEffect(Unit) {
         onDispose {
+            pendingSslHandler?.cancel()
             webViewRef.value?.apply {
                 stopLoading()
                 clearHistory()
@@ -2193,7 +2185,7 @@ fun AssignmentsList(
                                 ) {
                                     val pendingAssignmentsCount = assignments.count { it.status == AssignmentStatus.PENDING }
                                     val submittedAssignmentsCount = countSuccessfulSubmissions(historicalAssignments)
-                                    val totalAssignmentsCount = pendingAssignmentsCount + submittedAssignmentsCount
+                                    val totalAssignmentsCount = assignments.size + historicalAssignments.size
 
                                     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
                                         Text("$totalAssignmentsCount", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color.White)
