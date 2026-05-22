@@ -29,6 +29,8 @@ sealed class LoginResult {
     data class Error(val message: String) : LoginResult()
 }
 
+class PortalSystemException(message: String) : IOException(message)
+
 sealed class UploadResult {
     object Success : UploadResult()
     object NetworkError : UploadResult()
@@ -96,6 +98,20 @@ class PortalRepository {
     private fun debugLog(message: String) {
         if (com.danycli.assignmentchecker.BuildConfig.DEBUG) {
             Log.d("PortalAuth", message)
+        }
+    }
+
+    private fun detectPortalSystemErrors(html: String) {
+        val lowerHtml = html.lowercase()
+        val isPoolTimeout = lowerHtml.contains("timeout expired") && 
+            (lowerHtml.contains("pool") || lowerHtml.contains("connection"))
+        
+        if (isPoolTimeout) {
+            throw PortalSystemException("The portal server is currently overloaded and cannot connect to its database. Please try again in a few minutes.")
+        }
+        
+        if (lowerHtml.contains("runtime error") && lowerHtml.contains("customerrors mode=\"off\"")) {
+            throw PortalSystemException("The portal is currently experiencing a technical runtime error. Please try again later.")
         }
     }
 
@@ -903,6 +919,7 @@ class PortalRepository {
                     return LoginResult.CaptchaRequired
                 }
                 if (body.isBlank()) return LoginResult.Error("Empty server response")
+                detectPortalSystemErrors(body)
                 resolvedUrl to body
             }
             val initialUrl = initialPayload.first
@@ -1124,6 +1141,7 @@ class PortalRepository {
                     return LoginResult.CaptchaRequired
                 }
                 if (body.isBlank()) return LoginResult.Error("Empty server response")
+                detectPortalSystemErrors(body)
                 resolvedUrl to body
             }
             val finalUrl = finalPayload.first
@@ -1166,6 +1184,7 @@ class PortalRepository {
                     return LoginResult.CaptchaRequired
                 }
                 if (body.isBlank()) return LoginResult.Error("Empty server response")
+                detectPortalSystemErrors(body)
                 resolvedUrl to body
             }
             val verifyFinalUrl = verifyPayload.first
@@ -1202,6 +1221,9 @@ class PortalRepository {
                 clearSessionState()
                 LoginResult.InvalidCredentials
             }
+        } catch (e: PortalSystemException) {
+            clearSessionState()
+            LoginResult.Error(e.message ?: "Portal system error")
         } catch (e: Exception) {
             if (isRecoverableSecurityVerificationException(e)) {
                 debugLog("Connection privacy warning detected during login flow")
@@ -1233,6 +1255,7 @@ class PortalRepository {
                     Log.e("PortalAuth", "fetchAssignments empty server response")
                     return Pair(emptyList(), emptyList())
                 }
+                detectPortalSystemErrors(body)
                 response.request.url.toString() to body
             }
             val finalUrl = payload.first
@@ -1582,6 +1605,7 @@ class PortalRepository {
                     Log.e("PortalAuth", "fetchHistoricalAssignments empty server response")
                     return emptyList()
                 }
+                detectPortalSystemErrors(body)
                 response.request.url.toString() to body
             }
             val finalUrl = payload.first

@@ -24,4 +24,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "Assignment Checker"
 include(":app")
+include(":macrobenchmark")
  

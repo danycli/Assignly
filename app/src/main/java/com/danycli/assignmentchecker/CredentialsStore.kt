@@ -2,74 +2,74 @@ package com.danycli.assignmentchecker
 
 import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 
 object CredentialsStore {
+    private const val PREFS_NAME = "secure_app_prefs"
+    private const val KEY_USERNAME = "saved_username"
+    private const val KEY_PASSWORD = "saved_password"
+    private const val KEY_MIGRATED = "credentials_migrated"
+    private const val LEGACY_PREFS_NAME = "app_prefs"
+
     fun save(context: Context, username: String, password: String) {
         migratePlaintextCredentialsIfNeeded(context)
-        val prefs = securePrefs(context)
+        val prefs = SecurityUtils.getSecurePrefs(context, PREFS_NAME)
         prefs.edit().apply {
-            putString("saved_username", username)
-            putString("saved_password", password)
+            putString(KEY_USERNAME, username)
+            putString(KEY_PASSWORD, password)
             apply()
         }
     }
 
     fun get(context: Context): Pair<String, String>? {
         migratePlaintextCredentialsIfNeeded(context)
-        val prefs = securePrefs(context)
-        val username = prefs.getString("saved_username", null)
-        val password = prefs.getString("saved_password", null)
+        val prefs = SecurityUtils.getSecurePrefs(context, PREFS_NAME)
+        val username = prefs.getString(KEY_USERNAME, null)
+        val password = prefs.getString(KEY_PASSWORD, null)
         return if (username != null && password != null) Pair(username, password) else null
     }
 
     fun clear(context: Context) {
-        val secure = securePrefs(context)
+        val secure = SecurityUtils.getSecurePrefs(context, PREFS_NAME)
         secure.edit()
-            .remove("saved_username")
-            .remove("saved_password")
+            .remove(KEY_USERNAME)
+            .remove(KEY_PASSWORD)
             .apply()
-        context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        
+        // Clean legacy just in case
+        context.getSharedPreferences(LEGACY_PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .remove("saved_username")
-            .remove("saved_password")
+            .remove(KEY_USERNAME)
+            .remove(KEY_PASSWORD)
             .apply()
     }
-}
 
-private fun securePrefs(context: Context): android.content.SharedPreferences {
-    val masterKey = MasterKey.Builder(context)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
-    return EncryptedSharedPreferences.create(
-        context,
-        "secure_app_prefs",
-        masterKey,
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-    )
-}
+    private fun migratePlaintextCredentialsIfNeeded(context: Context) {
+        val secure = SecurityUtils.getSecurePrefs(context, PREFS_NAME)
+        
+        // If we failed to get encrypted prefs (fallback to standard), migration is moot or already standard.
+        // We only migrate if the secure prefs are actually EncryptedSharedPreferences (which we can't easily check via interface,
+        // but we can check if it's the intended secure file).
+        
+        val alreadyMigrated = secure.getBoolean(KEY_MIGRATED, false)
+        if (alreadyMigrated) return
 
-private fun migratePlaintextCredentialsIfNeeded(context: Context) {
-    val legacyPrefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
-    val secure = securePrefs(context)
-    val alreadyMigrated = secure.getBoolean("credentials_migrated", false)
-    if (alreadyMigrated) {
-        legacyPrefs.edit().remove("saved_username").remove("saved_password").apply()
-        return
-    }
+        val legacyPrefs = context.getSharedPreferences(LEGACY_PREFS_NAME, Context.MODE_PRIVATE)
+        val legacyUsername = legacyPrefs.getString(KEY_USERNAME, null)
+        val legacyPassword = legacyPrefs.getString(KEY_PASSWORD, null)
 
-    val legacyUsername = legacyPrefs.getString("saved_username", null)
-    val legacyPassword = legacyPrefs.getString("saved_password", null)
-    if (!legacyUsername.isNullOrBlank() && !legacyPassword.isNullOrBlank()) {
-        secure.edit()
-            .putString("saved_username", legacyUsername)
-            .putString("saved_password", legacyPassword)
-            .putBoolean("credentials_migrated", true)
+        if (!legacyUsername.isNullOrBlank() && !legacyPassword.isNullOrBlank()) {
+            secure.edit()
+                .putString(KEY_USERNAME, legacyUsername)
+                .putString(KEY_PASSWORD, legacyPassword)
+                .putBoolean(KEY_MIGRATED, true)
+                .apply()
+        } else {
+            secure.edit().putBoolean(KEY_MIGRATED, true).apply()
+        }
+
+        legacyPrefs.edit()
+            .remove(KEY_USERNAME)
+            .remove(KEY_PASSWORD)
             .apply()
-    } else {
-        secure.edit().putBoolean("credentials_migrated", true).apply()
     }
-
-    legacyPrefs.edit().remove("saved_username").remove("saved_password").apply()
 }
