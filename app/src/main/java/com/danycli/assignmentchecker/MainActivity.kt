@@ -14,9 +14,7 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -41,8 +39,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.metrics.performance.JankStats
 import com.danycli.assignmentchecker.ui.*
 import com.danycli.assignmentchecker.ui.theme.AssignmentCheckerTheme
-import com.danycli.assignmentchecker.ui.theme.Cyprus
-import com.danycli.assignmentchecker.ui.theme.Sand
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
@@ -128,6 +124,7 @@ fun MainScreen(
     var isLoading by remember { mutableStateOf(initialCredentials != null) }
     var assignments by remember { mutableStateOf<List<Assignment>>(emptyList()) }
     var historicalAssignments by remember { mutableStateOf<List<Assignment>>(emptyList()) }
+    var timetableLectures by remember { mutableStateOf<List<TimetableLecture>>(emptyList()) }
     var loggedInStudentName by remember { mutableStateOf<String?>(null) }
     var loggedInStudentPhoto by remember { mutableStateOf<ByteArray?>(null) }
     var lastSyncedMs by remember { mutableStateOf(0L) }
@@ -165,6 +162,8 @@ fun MainScreen(
     val pageForUi = when {
         !isLoggedIn -> AppPage.LOGIN
         currentScreen == ScreenType.SETTINGS -> AppPage.SETTINGS
+        currentScreen == ScreenType.DOWNLOADS -> AppPage.DOWNLOADS
+        currentScreen == ScreenType.TIMETABLE -> AppPage.TIMETABLE
         currentScreen == ScreenType.HISTORICAL -> AppPage.HISTORICAL
         else -> AppPage.PENDING
     }
@@ -181,6 +180,10 @@ fun MainScreen(
                 submittedCount = countSuccessfulSubmissions(cached.historicalAssignments),
                 previousMessage = welcomeStatusMessage
             )
+        }
+        val cachedTimetable = TimetableCacheStore.loadSnapshot(context)
+        if (cachedTimetable != null) {
+            timetableLectures = cachedTimetable.lectures
         }
     }
 
@@ -227,8 +230,15 @@ fun MainScreen(
             }
             AssignmentNotificationManager.scheduleDeadlineReminders(
                 context = context,
-                assignments = dashboardData.pendingAssignments
+                pending = dashboardData.pendingAssignments,
+                historical = dashboardData.historicalAssignments
             )
+        }
+        
+        val fetchedTimetable = viewModel.loadTimetable()
+        if (fetchedTimetable.isNotEmpty()) {
+            timetableLectures = fetchedTimetable
+            TimetableCacheStore.saveSnapshot(context, fetchedTimetable)
         }
     }
 
@@ -271,6 +281,14 @@ fun MainScreen(
                 pendingExitConfirmation = false
             }
             AppPage.HISTORICAL -> {
+                currentScreen = ScreenType.PENDING
+                pendingExitConfirmation = false
+            }
+            AppPage.TIMETABLE -> {
+                currentScreen = ScreenType.PENDING
+                pendingExitConfirmation = false
+            }
+            AppPage.DOWNLOADS -> {
                 currentScreen = ScreenType.PENDING
                 pendingExitConfirmation = false
             }
@@ -488,7 +506,7 @@ fun MainScreen(
     }
 
     val showUploadQueueDialog = remember { mutableStateOf(false) }
-    Surface(modifier = Modifier.fillMaxSize(), color = Sand) {
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Box(modifier = Modifier.fillMaxSize()) {
             Crossfade(
                 targetState = pageForUi,
@@ -545,6 +563,7 @@ fun MainScreen(
                                 }
                             },
                             onLogout = {
+                                AssignmentNotificationManager.cancelAllReminders(context)
                                 scope.coroutineContext.cancelChildren()
                                 uploadJob?.cancel()
                                 uploadJob = null
@@ -553,6 +572,7 @@ fun MainScreen(
                                 isLoggedIn = false
                                 assignments = emptyList()
                                 historicalAssignments = emptyList()
+                                timetableLectures = emptyList()
                                 loggedInStudentName = null
                                 loggedInStudentPhoto = null
                                 welcomeStatusMessage = "Your professors are still thinking how to annoy you in a brutal way possible."
@@ -702,8 +722,31 @@ fun MainScreen(
                                 DownloadQueueStore.remove(context, download.id)
                                 activeDownloads = activeDownloads.filter { it.id != download.id }
                             },
+                            lastSyncedMs = lastSyncedMs,
+                            timetableLectures = timetableLectures,
+                            onNavigateToTimetable = { currentScreen = ScreenType.TIMETABLE }
+                        )
+                    }
+                    AppPage.TIMETABLE -> {
+                        TimetableScreen(
+                            lectures = timetableLectures,
+                            isRefreshing = isPendingRefreshing,
+                            onRefresh = {
+                                if (isPendingRefreshing) return@TimetableScreen
+                                isPendingRefreshing = true
+                                scope.launch {
+                                    runCatching { refreshAssignmentsState() }
+                                    isPendingRefreshing = false
+                                }
+                            },
                             lastSyncedMs = lastSyncedMs
                         )
+                    }
+                    AppPage.DOWNLOADS -> {
+                        // Placeholder for Downloads screen
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("Downloads screen coming soon!", color = MaterialTheme.colorScheme.onBackground)
+                        }
                     }
                     AppPage.SETTINGS -> {
                         SettingsScreen(
@@ -834,10 +877,10 @@ fun MainScreen(
                 val queuedUploads = UploadQueueStore.getAll(context)
                 AlertDialog(
                     onDismissRequest = { showUploadQueueDialog.value = false },
-                    title = { Text("Upload queue", fontWeight = FontWeight.Bold, color = Cyprus) },
+                    title = { Text("Upload queue", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) },
                     text = {
                         if (queuedUploads.isEmpty()) {
-                            Text("No queued uploads")
+                            Text("No queued uploads", color = MaterialTheme.colorScheme.onSurface)
                         } else {
                             Column(
                                 modifier = Modifier
@@ -853,13 +896,13 @@ fun MainScreen(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Column(modifier = Modifier.weight(1f)) {
-                                            Text(q.assignmentTitle, fontSize = 14.sp)
-                                            Text(q.fileUri, fontSize = 11.sp, color = Color.Gray)
+                                            Text(q.assignmentTitle, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface)
+                                            Text(q.fileUri, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                             if (!q.lastError.isNullOrBlank()) {
-                                                Text(q.lastError, fontSize = 11.sp, color = Color(0xFFD32F2F))
+                                                Text(q.lastError, fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
                                             }
                                         }
-                                        Text(q.status.name)
+                                        Text(q.status.name, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                 }
                             }
@@ -867,7 +910,7 @@ fun MainScreen(
                     },
                     confirmButton = {
                         TextButton(onClick = { showUploadQueueDialog.value = false }) {
-                            Text("Close")
+                            Text("Close", color = MaterialTheme.colorScheme.primary)
                         }
                     }
                 )
@@ -877,9 +920,19 @@ fun MainScreen(
                 val loadingMessage = when {
                     pageForUi == AppPage.LOGIN -> "Signing in..."
                     loadingTargetScreen == ScreenType.HISTORICAL -> "Loading historical assignments..."
+                    loadingTargetScreen == ScreenType.TIMETABLE -> "Loading timetable..."
                     else -> "Loading assignments..."
                 }
                 LoadingStatusOverlay(message = loadingMessage)
+            }
+
+            if (isLoggedIn && !showCaptchaDialog) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+                    AssignlyBottomNavigation(
+                        currentScreen = currentScreen,
+                        onNavigate = { currentScreen = it }
+                    )
+                }
             }
         }
     }
@@ -919,7 +972,7 @@ fun MainScreen(
         ) {
             Card(
                 shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = if (isSystemInDarkTheme()) Color(0xFF101418) else Color.White),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
@@ -930,7 +983,7 @@ fun MainScreen(
                     ) {
                         Text(
                             text = "Update Available",
-                            color = Cyprus,
+                            color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.Bold,
                             fontSize = 18.sp
                         )
@@ -938,22 +991,22 @@ fun MainScreen(
                             Icon(
                                 imageVector = Icons.Default.Close,
                                 contentDescription = "Close update dialog",
-                                tint = Cyprus
+                                tint = MaterialTheme.colorScheme.primary
                             )
                         }
                     }
                     Text(
                         text = "A newer version (${updateInfo.displayLabel}) is available.",
-                        color = Color(0xFF2E2E2E),
+                        color = MaterialTheme.colorScheme.onSurface,
                         fontSize = 14.sp
                     )
                     Spacer(modifier = Modifier.height(14.dp))
                     Button(
                         onClick = { uriHandler.openUri(updateInfo.releaseUrl) },
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = Cyprus)
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                     ) {
-                        Text("Update now", color = Color.White, fontWeight = FontWeight.SemiBold)
+                        Text("Update now", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -968,7 +1021,7 @@ fun MainScreen(
                 Text(
                     text = "Instruction Files",
                     fontWeight = FontWeight.Bold,
-                    color = Cyprus
+                    color = MaterialTheme.colorScheme.primary
                 )
             },
             text = {
@@ -982,13 +1035,13 @@ fun MainScreen(
                     Text(
                         text = dialogState.assignment.assignmentTitle,
                         fontSize = 12.sp,
-                        color = Color.Gray,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 2
                     )
                     dialogState.files.forEach { file ->
                         Card(
                             modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFFF7F7F7))
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                         ) {
                             Row(
                                 modifier = Modifier
@@ -1001,28 +1054,31 @@ fun MainScreen(
                                     text = file.fileName,
                                     modifier = Modifier.weight(1f),
                                     fontSize = 12.sp,
-                                    color = Color.Black,
+                                    color = MaterialTheme.colorScheme.onSurface,
                                     maxLines = 2
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 OutlinedButton(
                                     onClick = {
-                                        selectedInstructionFile = file
-                                        DownloadWorkScheduler.enqueue(context, file.fileName, file.downloadLink)
-                                        Toast.makeText(context, "Download started in background", Toast.LENGTH_SHORT).show()
-                                        selectedInstructionFile = null
+                                        if (appSettings.downloadBehavior == DownloadBehavior.AUTO_DOWNLOADS) {
+                                            DownloadWorkScheduler.enqueue(context, file.fileName, file.downloadLink)
+                                            Toast.makeText(context, "Download started in background", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            selectedInstructionFile = file
+                                            instructionDownloadLauncher.launch(file.fileName)
+                                        }
                                     },
                                     shape = RoundedCornerShape(8.dp),
-                                    border = BorderStroke(1.dp, Cyprus)
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Download,
                                         contentDescription = "Download file",
-                                        tint = Cyprus,
+                                        tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(14.dp)
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Download", color = Cyprus, fontSize = 11.sp)
+                                    Text("Download", color = MaterialTheme.colorScheme.primary, fontSize = 11.sp)
                                 }
                             }
                         }
@@ -1031,7 +1087,7 @@ fun MainScreen(
             },
             confirmButton = {
                 TextButton(onClick = { instructionFilesDialog = null }) {
-                    Text("Close")
+                    Text("Close", color = MaterialTheme.colorScheme.primary)
                 }
             }
         )

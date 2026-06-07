@@ -6,11 +6,11 @@ data class InstructionFileDialogState(
 )
 
 enum class ScreenType {
-    PENDING, HISTORICAL, SETTINGS
+    PENDING, TIMETABLE, DOWNLOADS, HISTORICAL, SETTINGS
 }
 
 enum class AppPage {
-    LOGIN, PENDING, HISTORICAL, SETTINGS
+    LOGIN, PENDING, TIMETABLE, DOWNLOADS, HISTORICAL, SETTINGS
 }
 
 enum class PendingDueFilter {

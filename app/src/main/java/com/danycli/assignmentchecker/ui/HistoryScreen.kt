@@ -10,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,7 +39,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
@@ -54,11 +54,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.danycli.assignmentchecker.*
-import com.danycli.assignmentchecker.ui.theme.Cyprus
-import com.danycli.assignmentchecker.ui.theme.Sand
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -80,7 +75,7 @@ fun HistoricalAssignmentsScreen(
     var historySearchQuery by remember { mutableStateOf("") }
     var historySearchFocused by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    val historySearchBorderColor = if (historySearchFocused) Cyprus else Cyprus.copy(alpha = 0.36f)
+    val historySearchBorderColor = if (historySearchFocused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.36f)
     val historySearchElevation = 2.dp
     val historySearchBorderWidth = 1.2.dp
 
@@ -105,28 +100,28 @@ fun HistoricalAssignmentsScreen(
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
                             title,
-                            color = Color.White,
+                            color = MaterialTheme.colorScheme.onPrimary,
                             fontWeight = FontWeight.Bold
                         )
                         if (!loggedInStudentName.isNullOrBlank()) {
                             Text(
                                 "Logged in: $loggedInStudentName",
-                                color = Color.White.copy(alpha = 0.85f),
+                                color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f),
                                 fontSize = 11.sp,
                                 maxLines = 1
                             )
                         }
                     }
                 },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Cyprus),
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = MaterialTheme.colorScheme.primary),
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.onPrimary)
                     }
                 }
             )
         },
-        containerColor = Sand
+        containerColor = MaterialTheme.colorScheme.background
     ) { padding ->
         var selectedAssignment by remember { mutableStateOf<Assignment?>(null) }
         val focusManager = LocalFocusManager.current
@@ -205,7 +200,7 @@ fun HistoricalAssignmentsScreen(
                     Text(
                         text = "Last updated: $relativeSyncTime",
                         fontSize = 10.sp,
-                        color = if (isStale) Color(0xFF8B6B00) else Cyprus.copy(alpha = 0.5f),
+                        color = if (isStale) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
                         fontWeight = if (isStale) FontWeight.Bold else FontWeight.Normal
                     )
                 }
@@ -224,16 +219,11 @@ fun HistoricalAssignmentsScreen(
                             .shadow(
                                 elevation = historySearchElevation,
                                 shape = RoundedCornerShape(50.dp),
-                                ambientColor = Cyprus.copy(alpha = 0.10f),
-                                spotColor = Cyprus.copy(alpha = 0.10f)
+                                ambientColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                                spotColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
                             )
                             .background(
-                                brush = Brush.linearGradient(
-                                    colors = listOf(
-                                        Color(0xFFFCFBF7),
-                                        Color(0xFFF6F4EE)
-                                    )
-                                ),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
                                 shape = RoundedCornerShape(50.dp)
                             )
                             .border(
@@ -248,11 +238,11 @@ fun HistoricalAssignmentsScreen(
                             onValueChange = { historySearchQuery = it },
                             singleLine = true,
                             textStyle = LocalTextStyle.current.copy(
-                                color = Color(0xFF222222),
+                                color = MaterialTheme.colorScheme.onSurface,
                                 fontSize = 14.sp,
                                 textAlign = TextAlign.Start
                             ),
-                            cursorBrush = SolidColor(Color(0xFF222222)),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.onSurface),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .onFocusChanged { historySearchFocused = it.isFocused },
@@ -264,7 +254,7 @@ fun HistoricalAssignmentsScreen(
                                     Icon(
                                         imageVector = Icons.Default.Search,
                                         contentDescription = "Search",
-                                        tint = Color(0xB3222222),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.size(18.dp)
                                     )
                                     Spacer(modifier = Modifier.width(10.dp))
@@ -275,7 +265,7 @@ fun HistoricalAssignmentsScreen(
                                         if (historySearchQuery.isBlank()) {
                                             Text(
                                                 text = "Search by subject or assignment",
-                                                color = Color(0xCC222222),
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                                                 fontSize = 12.sp,
                                                 textAlign = TextAlign.Start,
                                                 maxLines = 1
@@ -300,7 +290,7 @@ fun HistoricalAssignmentsScreen(
                     ) {
                         Text(
                             if (assignments.isEmpty()) emptyStateText else "No matching assignments",
-                            color = Cyprus.copy(alpha = 0.55f),
+                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
                             fontSize = 18.sp
                         )
                     }
@@ -319,6 +309,7 @@ fun HistoricalAssignmentsScreen(
                     val context = LocalContext.current
                     val hasSubmitLink = assignment.submitLink.isNotEmpty()
                     val hasDownloadLink = assignment.downloadLink.isNotEmpty()
+                    val isDark = isSystemInDarkTheme()
 
                     Box {
                         Card(
@@ -331,7 +322,7 @@ fun HistoricalAssignmentsScreen(
                                     onLongClickLabel = "Show assignment actions"
                                 ),
                             shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color.White)
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                         ) {
                             Column(
                                 modifier = Modifier
@@ -343,7 +334,7 @@ fun HistoricalAssignmentsScreen(
                                     query = historySearchQuery,
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF0066CC)
+                                    color = if (isDark) Color(0xFF4FC3F7) else Color(0xFF0066CC)
                                 )
 
                                 Spacer(modifier = Modifier.height(8.dp))
@@ -353,7 +344,7 @@ fun HistoricalAssignmentsScreen(
                                     query = historySearchQuery,
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.SemiBold,
-                                    color = Color.Black
+                                    color = MaterialTheme.colorScheme.onSurface
                                 )
 
                                 Spacer(modifier = Modifier.height(8.dp))
@@ -363,13 +354,13 @@ fun HistoricalAssignmentsScreen(
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Column {
-                                        Text("Deadline:", fontSize = 11.sp, color = Color.Gray)
-                                        Text(assignment.deadline, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                        Text("Deadline:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(assignment.deadline, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
                                     }
                                     Column {
                                         val isNotSubmitted = assignment.status == AssignmentStatus.NOT_SUBMITTED_CLOSED
-                                        Text(if (isNotSubmitted) "Attempt:" else "Submitted:", fontSize = 11.sp, color = Color.Gray)
-                                        val attemptColor = if (isNotSubmitted) Color(0xFFD32F2F) else Color.Black
+                                        Text(if (isNotSubmitted) "Attempt:" else "Submitted:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        val attemptColor = if (isNotSubmitted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
                                         Text(
                                             if (isNotSubmitted) "Not Submitted" else assignment.submittedDate ?: "N/A",
                                             fontSize = 11.sp,
@@ -380,12 +371,12 @@ fun HistoricalAssignmentsScreen(
                                     Column(
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
-                                        Text("Status:", fontSize = 11.sp, color = Color.Gray)
+                                        Text("Status:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         val isNotSubmitted = assignment.status == AssignmentStatus.NOT_SUBMITTED_CLOSED
                                         val statusColor = when {
-                                            isNotSubmitted -> Color(0xFFD32F2F)
-                                            isOpenVal -> Color(0xFF4CAF50)
-                                            else -> Color(0xFFD32F2F)
+                                            isNotSubmitted -> MaterialTheme.colorScheme.error
+                                            isOpenVal -> if (isDark) Color(0xFFA5D6A7) else Color(0xFF4CAF50)
+                                            else -> MaterialTheme.colorScheme.error
                                         }
                                         Text(
                                             if (isNotSubmitted) "Closed" else assignment.getOpenClosedLabel(isOpenVal),
@@ -402,7 +393,7 @@ fun HistoricalAssignmentsScreen(
                                     Text(
                                         "Feedback: ${assignment.feedback}",
                                         fontSize = 11.sp,
-                                        color = Color(0xFF666666),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 3
                                     )
                                     Spacer(modifier = Modifier.height(8.dp))
@@ -419,7 +410,7 @@ fun HistoricalAssignmentsScreen(
                                         .fillMaxWidth()
                                         .height(40.dp),
                                     shape = RoundedCornerShape(8.dp),
-                                    border = BorderStroke(1.dp, Cyprus)
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
                                 ) {
                                     Row(
                                         horizontalArrangement = Arrangement.Center,
@@ -429,14 +420,14 @@ fun HistoricalAssignmentsScreen(
                                         Icon(
                                             imageVector = Icons.Default.Download,
                                             contentDescription = "Download instructions",
-                                            tint = if (hasDownloadLink) Cyprus else Color.Gray,
+                                            tint = if (hasDownloadLink) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                                             modifier = Modifier.size(16.dp)
                                         )
                                         Spacer(modifier = Modifier.width(4.dp))
                                         Text(
                                             if (hasDownloadLink) "Download Instructions" else "Instructions Unavailable",
                                             fontSize = 12.sp,
-                                            color = if (hasDownloadLink) Cyprus else Color.Gray
+                                            color = if (hasDownloadLink) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                                         )
                                     }
                                 }
@@ -451,7 +442,7 @@ fun HistoricalAssignmentsScreen(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .height(40.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = Cyprus),
+                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                                         shape = RoundedCornerShape(8.dp)
                                     ) {
                                         Row(
@@ -462,14 +453,14 @@ fun HistoricalAssignmentsScreen(
                                             Icon(
                                                 imageVector = Icons.Default.Upload,
                                                 contentDescription = "Change File",
-                                                tint = Color.White,
+                                                tint = MaterialTheme.colorScheme.onPrimary,
                                                 modifier = Modifier.size(16.dp)
                                             )
                                             Spacer(modifier = Modifier.width(4.dp))
                                             Text(
                                                 "Change File",
                                                 fontSize = 12.sp,
-                                                color = Color.White
+                                                color = MaterialTheme.colorScheme.onPrimary
                                             )
                                         }
                                     }

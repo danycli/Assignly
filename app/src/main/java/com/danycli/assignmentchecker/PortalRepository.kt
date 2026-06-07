@@ -2750,6 +2750,106 @@ class PortalRepository {
         }
     }
 
+    fun fetchTimetable(): List<TimetableLecture> {
+        return try {
+            val timetableUrl = "$baseUrl/TimeTable.aspx"
+            Log.d("PortalAuth", "Fetching timetable from: $timetableUrl")
+
+            val request = Request.Builder()
+                .url(timetableUrl)
+                .header("Referer", "$baseUrl/CoursePortal.aspx")
+                .header("User-Agent", userAgent)
+                .build()
+
+            val payload = client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.e("PortalAuth", "fetchTimetable HTTP ${response.code}")
+                    return emptyList()
+                }
+                val body = response.body?.string() ?: run {
+                    Log.e("PortalAuth", "fetchTimetable empty server response")
+                    return emptyList()
+                }
+                detectPortalSystemErrors(body)
+                response.request.url.toString() to body
+            }
+            val finalUrl = payload.first
+            val html = payload.second
+
+            val notAuthenticated = isLoginPage(finalUrl, html) || !hasSessionCookiesForHost(baseHost)
+            if (notAuthenticated) {
+                Log.d("PortalAuth", "Not authenticated for timetable")
+                return emptyList()
+            }
+
+            val doc = Jsoup.parse(html)
+            val lectures = mutableListOf<TimetableLecture>()
+
+            // Find the timetable grid
+            val table = doc.select("table[id*='gvTimeTable']").firstOrNull()
+                ?: doc.select("table.Grid").firstOrNull()
+
+            if (table == null) {
+                Log.d("PortalAuth", "Timetable table not found")
+                return emptyList()
+            }
+
+            val rows = table.select("tr")
+            Log.d("PortalAuth", "Timetable total rows: ${rows.size}")
+
+            for (i in 0 until rows.size) {
+                val row = rows[i]
+                val cols = row.select("td")
+                if (cols.size < 8) continue // Basic validation
+
+                // Expected columns: Day, Time, Course (Name + Code), Room, Instructor, Duration, Credit Hours
+                // We need to be careful with column indices as they might vary slightly.
+                // Typical SIS timetable columns:
+                // 1: Day, 2: Time, 3: Course, 4: Room, 5: Instructor, 6: Duration, 7: Credit Hours
+
+                val day = cols.getOrNull(1)?.text()?.trim().orEmpty()
+                val timeRange = cols.getOrNull(2)?.text()?.trim().orEmpty()
+                val courseRaw = cols.getOrNull(3)?.text()?.trim().orEmpty()
+                val room = cols.getOrNull(4)?.text()?.trim().orEmpty()
+                val instructor = cols.getOrNull(5)?.text()?.trim().orEmpty()
+                val duration = cols.getOrNull(6)?.text()?.trim().orEmpty()
+                val creditHours = cols.getOrNull(7)?.text()?.trim().orEmpty()
+
+                if (courseRaw.isBlank()) continue
+
+                // Parse Course Name and Code
+                // Often formatted as "COURSE_NAME (COURSE_CODE)" or similar
+                val courseName = courseRaw.substringBeforeLast("(").trim()
+                val courseCode = courseRaw.substringAfterLast("(", "").removeSuffix(")").trim()
+
+                // Parse Time Range "08:30 AM - 10:00 AM"
+                val times = timeRange.split("-").map { it.trim() }
+                val startTime = times.getOrNull(0).orEmpty()
+                val endTime = times.getOrNull(1).orEmpty()
+
+                lectures.add(
+                    TimetableLecture(
+                        courseName = if (courseName.isBlank()) courseRaw else courseName,
+                        courseCode = courseCode,
+                        instructor = instructor,
+                        room = room,
+                        day = day,
+                        startTime = startTime,
+                        endTime = endTime,
+                        duration = duration,
+                        creditHours = creditHours
+                    )
+                )
+            }
+
+            Log.d("PortalAuth", "Fetched ${lectures.size} timetable lectures")
+            lectures
+        } catch (e: Exception) {
+            Log.e("PortalAuth", "Error fetching timetable: ${e.message}", e)
+            emptyList()
+        }
+    }
+
     private fun normalizeUrl(href: String?, resolveBaseUrl: String = baseUrl): String {
         if (href.isNullOrBlank()) return ""
         val trimmed = href.trim()

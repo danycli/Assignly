@@ -5,6 +5,7 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -13,6 +14,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,10 +36,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
@@ -67,11 +67,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.danycli.assignmentchecker.*
-import com.danycli.assignmentchecker.ui.theme.Cyprus
-import com.danycli.assignmentchecker.ui.theme.Sand
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import java.time.LocalDate
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -91,6 +93,8 @@ fun AssignmentsList(
     onViewTotal: () -> Unit,
     onViewSubmitted: () -> Unit,
     onOpenSettings: () -> Unit,
+    timetableLectures: List<TimetableLecture> = emptyList(),
+    onNavigateToTimetable: () -> Unit = {},
     activeUploads: List<QueuedUpload> = emptyList(),
     onDismissUpload: (QueuedUpload) -> Unit = {},
     activeDownloads: List<QueuedDownload> = emptyList(),
@@ -145,36 +149,36 @@ fun AssignmentsList(
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
                             "My Assignments",
-                            color = Color.White,
+                            color = MaterialTheme.colorScheme.onPrimary,
                             fontWeight = FontWeight.Bold
                         )
                         if (!loggedInStudentName.isNullOrBlank()) {
                             Text(
                                 "Logged in: $loggedInStudentName",
-                                color = Color.White.copy(alpha = 0.85f),
+                                color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f),
                                 fontSize = 11.sp,
                                 maxLines = 1
                             )
                         }
                     }
                 },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Cyprus),
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = MaterialTheme.colorScheme.primary),
                 actions = {
                     IconButton(onClick = onRefresh) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Color.White)
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = MaterialTheme.colorScheme.onPrimary)
                     }
                     IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
+                        Icon(Icons.Default.Settings, contentDescription = "Settings", tint = MaterialTheme.colorScheme.onPrimary)
                     }
                 },
                 navigationIcon = {
                     IconButton(onClick = onLogout) {
-                        Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Logout", tint = Color.White)
+                        Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Logout", tint = MaterialTheme.colorScheme.onPrimary)
                     }
                 }
             )
         },
-        containerColor = Sand
+        containerColor = MaterialTheme.colorScheme.background
     ) { padding ->
         PullToRefreshBox(
             isRefreshing = isRefreshing,
@@ -202,6 +206,22 @@ fun AssignmentsList(
                         statusMessage = welcomeStatusMessage,
                         attendanceInsightMessage = attendanceInsightMessage
                     )
+                }
+
+                item {
+                    val currentDay = remember { LocalDate.now().dayOfWeek.name.lowercase().capitalize() }
+                    val todayLectures = remember(timetableLectures) { timetableLectures.filter { it.day.equals(currentDay, ignoreCase = true) } }
+                    val nextOrCurrentClass = remember(todayLectures) {
+                        todayLectures.firstOrNull { it.isCurrent() } 
+                            ?: todayLectures.filter { it.isUpcoming() }.minByOrNull { it.startTime }
+                    }
+
+                    if (nextOrCurrentClass != null) {
+                        NextClassDashboardWidget(
+                            lecture = nextOrCurrentClass,
+                            onClick = onNavigateToTimetable
+                        )
+                    }
                 }
 
                 if (activeUploads.isNotEmpty()) {
@@ -238,7 +258,7 @@ fun AssignmentsList(
                         ) {
                             Text(
                                 "No assignments yet",
-                                color = Cyprus.copy(alpha = 0.55f),
+                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
                                 fontSize = 15.sp
                             )
                         }
@@ -266,7 +286,7 @@ fun AssignmentsList(
                                 Icon(
                                     imageVector = Icons.Default.Warning,
                                     contentDescription = "Stale data",
-                                    tint = Color(0xFFFBC02D),
+                                    tint = if (isSystemInDarkTheme()) Color(0xFFFBC02D) else Color(0xFFFBC02D),
                                     modifier = Modifier.size(12.dp)
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
@@ -274,7 +294,7 @@ fun AssignmentsList(
                             Text(
                                 text = "Last updated: $relativeSyncTime",
                                 fontSize = 10.sp,
-                                color = if (isStale) Color(0xFF8B6B00) else Cyprus.copy(alpha = 0.5f),
+                                color = if (isStale) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
                                 fontWeight = if (isStale) FontWeight.Bold else FontWeight.Normal
                             )
                         }
@@ -287,7 +307,7 @@ fun AssignmentsList(
                                 .fillMaxWidth()
                                 .shadow(4.dp, shape = RoundedCornerShape(12.dp)),
                             shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = Cyprus)
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary)
                         ) {
                             Column(
                                 modifier = Modifier
@@ -298,7 +318,7 @@ fun AssignmentsList(
                                     "Assignment Summary",
                                     fontSize = 16.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = Color.White,
+                                    color = MaterialTheme.colorScheme.onPrimary,
                                     modifier = Modifier.padding(bottom = 12.dp)
                                 )
 
@@ -318,12 +338,12 @@ fun AssignmentsList(
                                             .clickable { onViewTotal() }
                                             .padding(vertical = 4.dp)
                                     ) {
-                                        Text("$totalAssignmentsCount", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                        Text("Total", fontSize = 11.sp, color = Color.White.copy(alpha = 0.8f))
+                                        Text("$totalAssignmentsCount", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary)
+                                        Text("Total", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f))
                                     }
                                     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
-                                        Text("$pendingAssignmentsCount", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFFD700))
-                                        Text("Pending", fontSize = 11.sp, color = Color.White.copy(alpha = 0.8f))
+                                        Text("$pendingAssignmentsCount", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = if (isSystemInDarkTheme()) Color(0xFFFFE082) else Color(0xFFFFD700))
+                                        Text("Pending", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f))
                                     }
                                     Column(
                                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -333,8 +353,8 @@ fun AssignmentsList(
                                             .clickable { onViewSubmitted() }
                                             .padding(vertical = 4.dp)
                                     ) {
-                                        Text("$submittedAssignmentsCount", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4CAF50))
-                                        Text("Submitted", fontSize = 11.sp, color = Color.White.copy(alpha = 0.8f))
+                                        Text("$submittedAssignmentsCount", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = if (isSystemInDarkTheme()) Color(0xFFA5D6A7) else Color(0xFF4CAF50))
+                                        Text("Submitted", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f))
                                     }
                                 }
                             }
@@ -345,34 +365,30 @@ fun AssignmentsList(
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color.White)
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                         ) {
                             Column(
                                 modifier = Modifier.padding(12.dp),
                                 verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 // Search Bar
+                                val isDark = isSystemInDarkTheme()
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .shadow(
                                             elevation = 2.dp,
                                             shape = RoundedCornerShape(50.dp),
-                                            ambientColor = Cyprus.copy(alpha = 0.10f),
-                                            spotColor = Cyprus.copy(alpha = 0.10f)
+                                            ambientColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                                            spotColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
                                         )
                                         .background(
-                                            brush = Brush.linearGradient(
-                                                colors = listOf(
-                                                    Color(0xFFFCFBF7),
-                                                    Color(0xFFF6F4EE)
-                                                )
-                                            ),
+                                            color = MaterialTheme.colorScheme.surfaceVariant,
                                             shape = RoundedCornerShape(50.dp)
                                         )
                                         .border(
                                             width = 1.2.dp,
-                                            color = if (searchFocused) Cyprus else Cyprus.copy(alpha = 0.36f),
+                                            color = if (searchFocused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.36f),
                                             shape = RoundedCornerShape(50.dp)
                                         )
                                         .padding(horizontal = 15.dp, vertical = 18.dp)
@@ -382,11 +398,11 @@ fun AssignmentsList(
                                         onValueChange = { searchQuery = it },
                                         singleLine = true,
                                         textStyle = LocalTextStyle.current.copy(
-                                            color = Color(0xFF222222),
+                                            color = MaterialTheme.colorScheme.onSurface,
                                             fontSize = 14.sp,
                                             textAlign = TextAlign.Start
                                         ),
-                                        cursorBrush = SolidColor(Color(0xFF222222)),
+                                        cursorBrush = SolidColor(MaterialTheme.colorScheme.onSurface),
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .onFocusChanged { searchFocused = it.isFocused },
@@ -398,7 +414,7 @@ fun AssignmentsList(
                                                 Icon(
                                                     imageVector = Icons.Default.Search,
                                                     contentDescription = "Search",
-                                                    tint = Color(0xB3222222),
+                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                                     modifier = Modifier.size(18.dp)
                                                 )
                                                 Spacer(modifier = Modifier.width(10.dp))
@@ -409,7 +425,7 @@ fun AssignmentsList(
                                                     if (searchQuery.isBlank()) {
                                                         Text(
                                                             text = "Search by subject or assignment",
-                                                            color = Color(0xCC222222),
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                                                             fontSize = 12.sp,
                                                             textAlign = TextAlign.Start,
                                                             maxLines = 1
@@ -422,7 +438,7 @@ fun AssignmentsList(
                                     )
                                 }
 
-                                Text("Due date filter", fontWeight = FontWeight.Bold, color = Cyprus)
+                                Text("Due date filter", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -439,9 +455,9 @@ fun AssignmentsList(
                                         AssistChip(
                                             onClick = { dueFilter = option },
                                             label = { Text(label) },
-                                            colors = androidx.compose.material3.AssistChipDefaults.assistChipColors(
-                                                containerColor = if (dueFilter == option) Cyprus.copy(alpha = 0.14f) else Color(0xFFF6F8FC),
-                                                labelColor = if (dueFilter == option) Cyprus else Color(0xFF2F3A4D)
+                                            colors = AssistChipDefaults.assistChipColors(
+                                                containerColor = if (dueFilter == option) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant,
+                                                labelColor = if (dueFilter == option) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         )
                                     }
@@ -460,7 +476,7 @@ fun AssignmentsList(
                             ) {
                                 Text(
                                     text = if (assignments.isEmpty()) "No pending assignments" else "No assignments match filters",
-                                    color = Cyprus.copy(alpha = 0.75f),
+                                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.75f),
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )
@@ -468,7 +484,7 @@ fun AssignmentsList(
                         } else {
                             Text(
                                 text = "Pending Assignments",
-                                color = Cyprus,
+                                color = MaterialTheme.colorScheme.primary,
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold,
                                 modifier = Modifier.padding(horizontal = 4.dp)
@@ -506,6 +522,73 @@ fun AssignmentsList(
     }
 }
 
+@Composable
+fun NextClassDashboardWidget(lecture: TimetableLecture, onClick: () -> Unit) {
+    val isLive = remember(lecture) { lecture.isCurrent() }
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .shadow(1.dp, shape = RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.04f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.1f))
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (isLive) "Currently In" else "Next Class",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (isLive) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = lecture.courseName,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "Room ${lecture.room} • ${lecture.startTime}",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            
+            val countdown = remember(lecture) {
+                val now = LocalTime.now()
+                if (isLive) {
+                    val end = runCatching { LocalTime.parse(lecture.endTime, DateTimeFormatter.ofPattern("hh:mm a", Locale.US)) }.getOrNull()
+                    val diff = end?.let { now.until(it, ChronoUnit.MINUTES) } ?: 0
+                    "Ends in $diff min"
+                } else {
+                    val start = runCatching { LocalTime.parse(lecture.startTime, DateTimeFormatter.ofPattern("hh:mm a", Locale.US)) }.getOrNull()
+                    val diff = start?.let { now.until(it, ChronoUnit.MINUTES) } ?: 0
+                    if (diff < 60) "$diff min"
+                    else "${diff / 60}h ${diff % 60}m"
+                }
+            }
+            
+            Surface(
+                color = if (isLive) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary,
+                shape = RoundedCornerShape(50.dp)
+            ) {
+                Text(
+                    text = countdown,
+                    color = Color.White,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun PendingAssignmentRow(
@@ -522,21 +605,22 @@ fun PendingAssignmentRow(
     val canUpload = assignment.submitLink.isNotEmpty()
     val isNotSubmittedClosed = assignment.status == AssignmentStatus.NOT_SUBMITTED_CLOSED
     val statusText = if (isNotSubmittedClosed) "Not submitted • Closed" else "Pending"
-    val statusColor = if (isNotSubmittedClosed) Color(0xFFD32F2F) else Color(0xFF4CAF50)
+    val isDark = isSystemInDarkTheme()
+    val statusColor = if (isNotSubmittedClosed) MaterialTheme.colorScheme.error else if (isDark) Color(0xFFA5D6A7) else Color(0xFF4CAF50)
     var menuExpanded by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxWidth()) {
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .border(1.dp, Color(0xFFE2E8F0), RoundedCornerShape(10.dp))
+                .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f), RoundedCornerShape(10.dp))
                 .combinedClickable(
                     onClick = {},
                     onLongClick = { menuExpanded = true },
                     onLongClickLabel = "Show assignment actions"
                 ),
             shape = RoundedCornerShape(10.dp),
-            color = if (index % 2 == 0) Color.White else Color(0xFFFBFCFF)
+            color = MaterialTheme.colorScheme.surface
         ) {
             Row(
                 modifier = Modifier
@@ -548,7 +632,7 @@ fun PendingAssignmentRow(
                 Text(
                     text = index.toString(),
                     fontSize = 11.sp,
-                    color = Color(0xFF5B6775),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.width(20.dp),
                     textAlign = TextAlign.Center
                 )
@@ -561,7 +645,7 @@ fun PendingAssignmentRow(
                         query = searchQuery,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = Color(0xFF0066CC),
+                        color = if (isDark) Color(0xFF4FC3F7) else Color(0xFF0066CC),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -569,14 +653,14 @@ fun PendingAssignmentRow(
                         text = assignment.assignmentTitle,
                         query = searchQuery,
                         fontSize = 11.sp,
-                        color = Color(0xFF1A1A1A),
+                        color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = "Due: ${assignment.deadline}",
                         fontSize = 10.sp,
-                        color = Color(0xFF5B6775),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1
                     )
                     Text(
@@ -590,13 +674,13 @@ fun PendingAssignmentRow(
                 Text(
                     text = if (canDownload) "Download" else "No file",
                     fontSize = 11.sp,
-                    color = if (canDownload) Color(0xFF0066CC) else Color.Gray,
+                    color = if (canDownload) (if (isDark) Color(0xFF4FC3F7) else Color(0xFF0066CC)) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                     modifier = Modifier.clickable(enabled = canDownload, onClick = onDownloadRequested)
                 )
                 Text(
                     text = if (canUpload) "Upload" else "Closed",
                     fontSize = 11.sp,
-                    color = if (canUpload) Cyprus else Color.Gray,
+                    color = if (canUpload) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                     modifier = Modifier.clickable(enabled = canUpload, onClick = onUploadRequested)
                 )
             }
@@ -648,19 +732,23 @@ fun StudentWelcomeCard(
     attendanceInsightMessage: String?
 ) {
     val resolvedName = studentName?.takeIf { it.isNotBlank() } ?: "Student"
+    val isDark = isSystemInDarkTheme()
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .shadow(2.dp, shape = RoundedCornerShape(20.dp)),
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF7FAFF))
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(
                     Brush.horizontalGradient(
-                        colors = listOf(Color(0xFFEFF6FF), Color(0xFFF8FBFF))
+                        colors = listOf(
+                            MaterialTheme.colorScheme.surfaceVariant,
+                            MaterialTheme.colorScheme.surface
+                        )
                     )
                 )
                 .padding(horizontal = 16.dp, vertical = 14.dp)
@@ -677,26 +765,26 @@ fun StudentWelcomeCard(
                     Text(
                         text = "Whats up",
                         fontSize = 13.sp,
-                        color = Color(0xFF355D8C),
+                        color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.Medium
                     )
                     Text(
                         text = resolvedName,
                         fontSize = 19.sp,
-                        color = Color(0xFF15263D),
+                        color = MaterialTheme.colorScheme.onSurface,
                         fontWeight = FontWeight.ExtraBold,
                         maxLines = 2
                     )
                     Text(
                         text = statusMessage,
                         fontSize = 11.sp,
-                        color = Color(0xFF4F6A8C)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     if (!attendanceInsightMessage.isNullOrBlank()) {
                         Text(
                             text = attendanceInsightMessage,
                             fontSize = 11.sp,
-                            color = Color(0xFF8F2D2D),
+                            color = MaterialTheme.colorScheme.error,
                             fontWeight = FontWeight.SemiBold
                         )
                     }
@@ -706,8 +794,8 @@ fun StudentWelcomeCard(
                     modifier = Modifier
                         .size(76.dp)
                         .clip(CircleShape)
-                        .background(Color.White)
-                        .border(2.dp, Color(0xFFD4E5FF), CircleShape),
+                        .background(MaterialTheme.colorScheme.surface)
+                        .border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f), CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     if (profileBitmap != null) {

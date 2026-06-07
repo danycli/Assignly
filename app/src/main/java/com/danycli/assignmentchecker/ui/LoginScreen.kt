@@ -1,7 +1,6 @@
 package com.danycli.assignmentchecker.ui
 
 import android.graphics.Bitmap
-import android.net.Uri
 import android.net.http.SslError
 import android.webkit.CookieManager
 import android.webkit.SslErrorHandler
@@ -14,53 +13,18 @@ import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -68,7 +32,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -80,12 +44,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import com.danycli.assignmentchecker.BuildConfig
 import com.danycli.assignmentchecker.CAPTCHA_RETRY_DELAY_MS
-import com.danycli.assignmentchecker.LoginResult
 import com.danycli.assignmentchecker.MainViewModel
 import com.danycli.assignmentchecker.R
 import com.danycli.assignmentchecker.retryIo
-import com.danycli.assignmentchecker.ui.theme.Cyprus
-import com.danycli.assignmentchecker.ui.theme.Sand
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
@@ -98,12 +59,12 @@ fun AppSplashScreen() {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Sand),
+            .background(MaterialTheme.colorScheme.background),
         contentAlignment = Alignment.Center
     ) {
         Card(
             shape = CircleShape,
-            colors = CardDefaults.cardColors(containerColor = Color.White),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
         ) {
             Box(
@@ -132,13 +93,18 @@ fun LoginScreen(
     var passwordVisible by remember { mutableStateOf(false) }
     var usernameFocused by remember { mutableStateOf(false) }
     var passwordFocused by remember { mutableStateOf(false) }
+    val isDark = isSystemInDarkTheme()
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(
                 brush = Brush.verticalGradient(
-                    colors = listOf(Color.White, Sand.copy(alpha = 0.3f), Sand)
+                    colors = if (isDark) {
+                        listOf(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.surface)
+                    } else {
+                        listOf(Color.White, MaterialTheme.colorScheme.background.copy(alpha = 0.3f), MaterialTheme.colorScheme.background)
+                    }
                 )
             ),
         contentAlignment = Alignment.Center
@@ -155,15 +121,20 @@ fun LoginScreen(
             Surface(
                 modifier = Modifier
                     .size(100.dp)
-                    .shadow(12.dp, CircleShape, ambientColor = Cyprus, spotColor = Cyprus),
+                    .shadow(
+                        elevation = 12.dp,
+                        shape = CircleShape,
+                        ambientColor = MaterialTheme.colorScheme.primary,
+                        spotColor = MaterialTheme.colorScheme.primary
+                    ),
                 shape = CircleShape,
-                color = Color.White
+                color = MaterialTheme.colorScheme.surface
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Image(
                         painter = painterResource(id = R.mipmap.ic_launcher_foreground),
                         contentDescription = "App logo",
-                        modifier = Modifier.size(110.dp) // Increased size for "zoom" effect
+                        modifier = Modifier.size(110.dp)
                     )
                 }
             }
@@ -174,14 +145,14 @@ fun LoginScreen(
                 text = "ASSIGNLY",
                 fontSize = 28.sp,
                 fontWeight = FontWeight.Black,
-                color = Cyprus,
+                color = MaterialTheme.colorScheme.primary,
                 letterSpacing = 4.sp
             )
 
             Text(
                 text = "Academic companion",
                 fontSize = 12.sp,
-                color = Cyprus.copy(alpha = 0.4f),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 2.sp,
                 modifier = Modifier.padding(top = 4.dp)
@@ -199,7 +170,7 @@ fun LoginScreen(
                     value = username,
                     onValueChange = { username = it },
                     label = { Text("Registration Number", fontSize = 12.sp, fontWeight = FontWeight.Bold) },
-                    placeholder = { Text("SP25-BCS-001", color = Color.LightGray) },
+                    placeholder = { Text("SP25-BCS-001", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)) },
                     modifier = Modifier
                         .fillMaxWidth()
                         .onFocusChanged { usernameFocused = it.isFocused },
@@ -207,26 +178,25 @@ fun LoginScreen(
                     enabled = !isLoading,
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Cyprus,
-                        unfocusedBorderColor = Color(0xFFEEEEEE),
-                        focusedLabelColor = Cyprus,
-                        unfocusedLabelColor = Color.Gray.copy(alpha = 0.5f),
-                        disabledBorderColor = Color(0xFFEEEEEE), // Keep border visible while loading
-                        disabledLabelColor = Color.Gray.copy(alpha = 0.5f),
-                        disabledPlaceholderColor = Color.LightGray,
-                        disabledTextColor = Cyprus.copy(alpha = 0.6f),
-                        cursorColor = Cyprus,
-                        focusedContainerColor = Color.White,
-                        unfocusedContainerColor = Color.White,
-                        disabledContainerColor = Color.White, // Don't let it blend into background
-                        focusedTextColor = Cyprus,
-                        unfocusedTextColor = Cyprus.copy(alpha = 0.8f)
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                        focusedLabelColor = MaterialTheme.colorScheme.primary,
+                        unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        disabledBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.1f),
+                        disabledLabelColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                        disabledTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        cursorColor = MaterialTheme.colorScheme.primary,
+                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                        disabledContainerColor = MaterialTheme.colorScheme.surface,
+                        focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                        unfocusedTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
                     ),
                     leadingIcon = {
                         Icon(
                             Icons.Default.Person,
                             contentDescription = null,
-                            tint = if (usernameFocused) Cyprus else Color(0xFFCCCCCC),
+                            tint = if (usernameFocused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
                             modifier = Modifier.size(20.dp)
                         )
                     }
@@ -247,7 +217,7 @@ fun LoginScreen(
                             Icon(
                                 imageVector = image,
                                 contentDescription = null,
-                                tint = Color(0xFFCCCCCC),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
                                 modifier = Modifier.size(20.dp)
                             )
                         }
@@ -255,26 +225,25 @@ fun LoginScreen(
                     enabled = !isLoading,
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Cyprus,
-                        unfocusedBorderColor = Color(0xFFEEEEEE),
-                        focusedLabelColor = Cyprus,
-                        unfocusedLabelColor = Color.Gray.copy(alpha = 0.5f),
-                        disabledBorderColor = Color(0xFFEEEEEE), // Keep border visible while loading
-                        disabledLabelColor = Color.Gray.copy(alpha = 0.5f),
-                        disabledPlaceholderColor = Color.LightGray,
-                        disabledTextColor = Cyprus.copy(alpha = 0.6f),
-                        cursorColor = Cyprus,
-                        focusedContainerColor = Color.White,
-                        unfocusedContainerColor = Color.White,
-                        disabledContainerColor = Color.White, // Don't let it blend into background
-                        focusedTextColor = Cyprus,
-                        unfocusedTextColor = Cyprus.copy(alpha = 0.8f)
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                        focusedLabelColor = MaterialTheme.colorScheme.primary,
+                        unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        disabledBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.1f),
+                        disabledLabelColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                        disabledTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        cursorColor = MaterialTheme.colorScheme.primary,
+                        focusedContainerColor = MaterialTheme.colorScheme.surface,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                        disabledContainerColor = MaterialTheme.colorScheme.surface,
+                        focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                        unfocusedTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
                     ),
                     leadingIcon = {
                         Icon(
                             Icons.Default.Lock,
                             contentDescription = null,
-                            tint = if (passwordFocused) Cyprus else Color(0xFFCCCCCC),
+                            tint = if (passwordFocused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
                             modifier = Modifier.size(20.dp)
                         )
                     }
@@ -289,25 +258,26 @@ fun LoginScreen(
                         .height(58.dp),
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Cyprus,
-                        disabledContainerColor = Cyprus // Keep it Cyprus even when loading/disabled
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
                     ),
                     enabled = !isLoading && username.isNotBlank() && password.isNotBlank()
                 ) {
                     if (isLoading) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(20.dp),
-                            color = Color.White,
+                            color = MaterialTheme.colorScheme.onPrimary,
                             strokeWidth = 2.dp
                         )
                         Spacer(modifier = Modifier.width(12.dp))
-                        Text("VERIFYING...", fontWeight = FontWeight.Black, fontSize = 13.sp)
+                        Text("VERIFYING...", fontWeight = FontWeight.Black, fontSize = 13.sp, color = MaterialTheme.colorScheme.onPrimary)
                     } else {
                         Text(
                             "SIGN IN",
                             fontWeight = FontWeight.Black,
                             fontSize = 14.sp,
-                            letterSpacing = 2.sp
+                            letterSpacing = 2.sp,
+                            color = MaterialTheme.colorScheme.onPrimary
                         )
                     }
                 }
@@ -319,21 +289,21 @@ fun LoginScreen(
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(12.dp))
-                    .background(Color.Black.copy(alpha = 0.04f))
+                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f))
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
                     imageVector = Icons.Default.Info,
                     contentDescription = null,
-                    tint = Cyprus.copy(alpha = 0.3f),
+                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
                     modifier = Modifier.size(14.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = "Use format: SP25-BCS-001",
                     fontSize = 11.sp,
-                    color = Cyprus.copy(alpha = 0.4f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -344,7 +314,7 @@ fun LoginScreen(
                 Text(
                     "Security & Privacy Disclaimer",
                     fontSize = 11.sp,
-                    color = Cyprus.copy(alpha = 0.5f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                     fontWeight = FontWeight.SemiBold
                 )
             }
@@ -505,7 +475,7 @@ fun CaptchaWebViewDialog(
     Dialog(onDismissRequest = ::dismissVerificationDialog) {
         Card(
             shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = if (isSystemInDarkTheme()) Color(0xFF101418) else Color.White),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 460.dp, max = 700.dp)
@@ -515,28 +485,31 @@ fun CaptchaWebViewDialog(
                     title = {
                         Text(
                             text = pageTitle.ifBlank { "Security Verification" },
-                            maxLines = 1
+                            maxLines = 1,
+                            color = MaterialTheme.colorScheme.onPrimary
                         )
                     },
                     navigationIcon = {
                         IconButton(onClick = ::dismissVerificationDialog) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Close verification"
+                                contentDescription = "Close verification",
+                                tint = MaterialTheme.colorScheme.onPrimary
                             )
                         }
                     },
                     actions = {
                         TextButton(onClick = { webViewRef.value?.reload() }) {
-                            Text("Reload")
+                            Text("Reload", color = MaterialTheme.colorScheme.onPrimary)
                         }
-                    }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primary)
                 )
 
                 if (isPageLoading) {
                     LinearProgressIndicator(
                         modifier = Modifier.fillMaxWidth(),
-                        color = Cyprus
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
 
@@ -665,18 +638,18 @@ fun CaptchaWebViewDialog(
                     } else {
                         Surface(
                             modifier = Modifier.fillMaxSize(),
-                            color = if (isSystemInDarkTheme()) Color(0xFF101418) else Color.White
+                            color = MaterialTheme.colorScheme.surface
                         ) {
                             Column(
                                 modifier = Modifier.fillMaxSize(),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.Center
                             ) {
-                                CircularProgressIndicator(color = Cyprus)
+                                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                                 Spacer(modifier = Modifier.height(12.dp))
                                 Text(
                                     text = "Checking verification status...",
-                                    color = Cyprus,
+                                    color = MaterialTheme.colorScheme.primary,
                                     fontSize = 13.sp
                                 )
                             }
@@ -686,18 +659,18 @@ fun CaptchaWebViewDialog(
                     if (isCompletingVerification || hasAutoSubmitted) {
                         Surface(
                             modifier = Modifier.fillMaxSize(),
-                            color = if (isSystemInDarkTheme()) Color(0xFF101418) else Color.White
+                            color = MaterialTheme.colorScheme.surface
                         ) {
                             Column(
                                 modifier = Modifier.fillMaxSize(),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.Center
                             ) {
-                                CircularProgressIndicator(color = Cyprus)
+                                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                                 Spacer(modifier = Modifier.height(12.dp))
                                 Text(
                                     text = "Verification completed. Finishing sign-in...",
-                                    color = Cyprus,
+                                    color = MaterialTheme.colorScheme.primary,
                                     fontSize = 13.sp
                                 )
                             }
@@ -717,24 +690,24 @@ fun CaptchaWebViewDialog(
                                 completeCaptchaFlow("Continuing sign-in...")
                             },
                             modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Cyprus)
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary)
                         ) {
                             Text("Continue")
                         }
                         Button(
                             onClick = ::dismissVerificationDialog,
                             modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = Cyprus)
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                         ) {
-                            Text("Cancel", color = Color.White)
+                            Text("Cancel", color = MaterialTheme.colorScheme.onPrimary)
                         }
                     } else {
                         Button(
                             onClick = ::dismissVerificationDialog,
                             modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = Cyprus)
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                         ) {
-                            Text("Cancel", color = Color.White)
+                            Text("Cancel", color = MaterialTheme.colorScheme.onPrimary)
                         }
                     }
                 }
@@ -744,21 +717,21 @@ fun CaptchaWebViewDialog(
                         text = "No security check prompt detected. Sign-in continues automatically.",
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
                         fontSize = 12.sp,
-                        color = Cyprus
+                        color = MaterialTheme.colorScheme.primary
                     )
                 } else if (!challengeLooksSolved) {
                     Text(
                         text = "Complete verification. Sign-in continues automatically.",
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
                         fontSize = 12.sp,
-                        color = Cyprus
+                        color = MaterialTheme.colorScheme.primary
                     )
                 } else if (!hasAutoSubmitted) {
                     Text(
                         text = "Verification detected. Completing sign-in...",
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
                         fontSize = 12.sp,
-                        color = Cyprus
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
             }
@@ -772,11 +745,11 @@ fun CaptchaWebViewDialog(
                 pendingSslHandler = null
                 pendingSslError = null
             },
-            title = { Text("Your connection is not private", color = Cyprus) },
+            title = { Text("Your connection is not private", color = MaterialTheme.colorScheme.primary) },
             text = {
                 Text(
                     text = sslWarningMessage(pendingSslError),
-                    color = if (isSystemInDarkTheme()) Color(0xFFE5EAF0) else Color(0xFF2E2E2E)
+                    color = MaterialTheme.colorScheme.onSurface
                 )
             },
             confirmButton = {
@@ -788,7 +761,7 @@ fun CaptchaWebViewDialog(
                         isPageLoading = true
                     }
                 ) {
-                    Text("Continue")
+                    Text("Continue", color = MaterialTheme.colorScheme.primary)
                 }
             },
             dismissButton = {
@@ -799,7 +772,7 @@ fun CaptchaWebViewDialog(
                         pendingSslError = null
                     }
                 ) {
-                    Text("Cancel")
+                    Text("Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         )

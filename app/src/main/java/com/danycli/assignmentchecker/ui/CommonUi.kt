@@ -8,6 +8,8 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,8 +42,10 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
@@ -63,26 +67,23 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.danycli.assignmentchecker.Assignment
-import com.danycli.assignmentchecker.DownloadQueueStatus
-import com.danycli.assignmentchecker.QueuedDownload
-import com.danycli.assignmentchecker.QueuedUpload
-import com.danycli.assignmentchecker.UploadQueueStatus
-import com.danycli.assignmentchecker.ui.theme.Cyprus
-import com.danycli.assignmentchecker.ui.theme.Sand
+import com.danycli.assignmentchecker.*
+import com.danycli.assignmentchecker.ui.theme.*
 
 @Composable
 fun ActiveUploadStatusCard(upload: QueuedUpload, onDismiss: () -> Unit = {}) {
+    val isDark = isSystemInDarkTheme()
     val isFinished = upload.status == UploadQueueStatus.SUCCESS || upload.status == UploadQueueStatus.FAILED
+    
     val backgroundColor = when (upload.status) {
-        UploadQueueStatus.SUCCESS -> Color(0xFFE8F5E9) // Light Green
-        UploadQueueStatus.FAILED -> Color(0xFFFFEBEE) // Light Red
-        else -> Color.White
+        UploadQueueStatus.SUCCESS -> if (isDark) Color(0xFF1B3921) else Color(0xFFE8F5E9)
+        UploadQueueStatus.FAILED -> if (isDark) Color(0xFF401D24) else Color(0xFFFFEBEE)
+        else -> MaterialTheme.colorScheme.surface
     }
     val contentColor = when (upload.status) {
-        UploadQueueStatus.SUCCESS -> Color(0xFF2E7D32)
-        UploadQueueStatus.FAILED -> Color(0xFFC62828)
-        else -> Cyprus
+        UploadQueueStatus.SUCCESS -> if (isDark) Color(0xFF81C784) else Color(0xFF2E7D32)
+        UploadQueueStatus.FAILED -> if (isDark) Color(0xFFCF6679) else Color(0xFFC62828)
+        else -> MaterialTheme.colorScheme.primary
     }
 
     Card(
@@ -132,7 +133,7 @@ fun ActiveUploadStatusCard(upload: QueuedUpload, onDismiss: () -> Unit = {}) {
                         },
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = if (upload.status == UploadQueueStatus.FAILED_RETRY) Color(0xFFD32F2F) else contentColor
+                        color = if (upload.status == UploadQueueStatus.FAILED_RETRY) MaterialTheme.colorScheme.error else contentColor
                     )
                 }
             }
@@ -149,7 +150,7 @@ fun ActiveUploadStatusCard(upload: QueuedUpload, onDismiss: () -> Unit = {}) {
                 Text(
                     text = upload.lastError,
                     fontSize = 11.sp,
-                    color = Color(0xFFD32F2F),
+                    color = MaterialTheme.colorScheme.error,
                     lineHeight = 14.sp
                 )
             }
@@ -159,16 +160,18 @@ fun ActiveUploadStatusCard(upload: QueuedUpload, onDismiss: () -> Unit = {}) {
 
 @Composable
 fun ActiveDownloadStatusCard(download: QueuedDownload, onDismiss: () -> Unit = {}) {
+    val isDark = isSystemInDarkTheme()
     val isFinished = download.status == DownloadQueueStatus.SUCCESS || download.status == DownloadQueueStatus.FAILED
+    
     val backgroundColor = when (download.status) {
-        DownloadQueueStatus.SUCCESS -> Color(0xFFE0F7FA) // Light Cyan
-        DownloadQueueStatus.FAILED -> Color(0xFFFFEBEE) // Light Red
-        else -> Color.White
+        DownloadQueueStatus.SUCCESS -> if (isDark) Color(0xFF113438) else Color(0xFFE0F7FA)
+        DownloadQueueStatus.FAILED -> if (isDark) Color(0xFF401D24) else Color(0xFFFFEBEE)
+        else -> MaterialTheme.colorScheme.surface
     }
     val contentColor = when (download.status) {
-        DownloadQueueStatus.SUCCESS -> Color(0xFF006064)
-        DownloadQueueStatus.FAILED -> Color(0xFFC62828)
-        else -> Color(0xFF0066CC)
+        DownloadQueueStatus.SUCCESS -> if (isDark) Color(0xFF4DD0E1) else Color(0xFF006064)
+        DownloadQueueStatus.FAILED -> if (isDark) Color(0xFFCF6679) else Color(0xFFC62828)
+        else -> MaterialTheme.colorScheme.secondary
     }
 
     Card(
@@ -234,7 +237,7 @@ fun ActiveDownloadStatusCard(download: QueuedDownload, onDismiss: () -> Unit = {
                 Text(
                     text = download.lastError,
                     fontSize = 11.sp,
-                    color = Color(0xFFD32F2F),
+                    color = MaterialTheme.colorScheme.error,
                     lineHeight = 14.sp
                 )
             }
@@ -266,6 +269,10 @@ fun HighlightedText(
         return
     }
 
+    val isDark = isSystemInDarkTheme()
+    val highlightColor = if (isDark) Color(0xFFFBC02D) else Color(0xFFFFF176)
+    val highlightTextColor = Color.Black
+
     val annotatedString = buildAnnotatedString {
         var start = 0
         while (start < text.length) {
@@ -275,7 +282,7 @@ fun HighlightedText(
                 break
             }
             append(text.substring(start, index))
-            withStyle(style = SpanStyle(background = Color(0xFFFFF176), color = Color.Black)) {
+            withStyle(style = SpanStyle(background = highlightColor, color = highlightTextColor)) {
                 append(text.substring(index, index + query.length))
             }
             start = index + query.length
@@ -295,6 +302,8 @@ fun HighlightedText(
 
 @Composable
 fun rememberSkeletonBrush(): Brush {
+    val isDark = isSystemInDarkTheme()
+    val baseColor = if (isDark) Color.DarkGray else Color.LightGray
     val transition = rememberInfiniteTransition(label = "skeleton")
     val shimmerOffset by transition.animateFloat(
         initialValue = 0f,
@@ -307,9 +316,9 @@ fun rememberSkeletonBrush(): Brush {
     )
     return Brush.linearGradient(
         colors = listOf(
-            Color.LightGray.copy(alpha = 0.45f),
-            Color.LightGray.copy(alpha = 0.2f),
-            Color.LightGray.copy(alpha = 0.45f)
+            baseColor.copy(alpha = 0.45f),
+            baseColor.copy(alpha = 0.2f),
+            baseColor.copy(alpha = 0.45f)
         ),
         start = Offset(shimmerOffset - 200f, shimmerOffset - 200f),
         end = Offset(shimmerOffset, shimmerOffset)
@@ -339,24 +348,24 @@ fun PendingAssignmentsSkeleton() {
                 title = {
                     Text(
                         "My Assignments",
-                        color = Color.White,
+                        color = MaterialTheme.colorScheme.onPrimary,
                         fontWeight = FontWeight.Bold
                     )
                 },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Cyprus),
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = MaterialTheme.colorScheme.primary),
                 actions = {
                     IconButton(onClick = {}) {
-                        Icon(Icons.Default.Refresh, contentDescription = null, tint = Color.White)
+                        Icon(Icons.Default.Refresh, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary)
                     }
                 },
                 navigationIcon = {
                     IconButton(onClick = {}) {
-                        Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, tint = Color.White)
+                        Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary)
                     }
                 }
             )
         },
-        containerColor = Sand
+        containerColor = MaterialTheme.colorScheme.background
     ) { padding ->
         LazyColumn(
             modifier = Modifier
@@ -377,11 +386,9 @@ fun PendingAssignmentsSkeleton() {
             for (index in 0 until 5) {
                 item {
                     Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(if (index % 2 == 0) Color.White else Color(0xFFF0F0F0)),
+                        modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color.White)
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                     ) {
                         Column(
                             modifier = Modifier
@@ -425,19 +432,19 @@ fun HistoricalAssignmentsSkeleton() {
                 title = {
                     Text(
                         "Assignment History",
-                        color = Color.White,
+                        color = MaterialTheme.colorScheme.onPrimary,
                         fontWeight = FontWeight.Bold
                     )
                 },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Cyprus),
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = MaterialTheme.colorScheme.primary),
                 navigationIcon = {
                     IconButton(onClick = {}) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, tint = Color.White)
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary)
                     }
                 }
             )
         },
-        containerColor = Sand
+        containerColor = MaterialTheme.colorScheme.background
     ) { padding ->
         LazyColumn(
             modifier = Modifier
@@ -449,11 +456,9 @@ fun HistoricalAssignmentsSkeleton() {
             for (index in 0 until 5) {
                 item {
                     Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(if (index % 2 == 0) Color.White else Color(0xFFF0F0F0)),
+                        modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color.White)
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                     ) {
                         Column(
                             modifier = Modifier
@@ -497,7 +502,7 @@ fun DisclaimerFooter(
     ) {
         Text(
             text = "Disclaimer",
-            color = Cyprus,
+            color = MaterialTheme.colorScheme.primary,
             fontWeight = FontWeight.SemiBold,
             fontSize = 12.sp
         )
@@ -509,13 +514,13 @@ fun LoadingStatusOverlay(message: String) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.08f))
+            .background(Color.Black.copy(alpha = 0.4f))
             .padding(16.dp),
         contentAlignment = Alignment.BottomCenter
     ) {
         Card(
             shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
         ) {
             Row(
@@ -525,12 +530,12 @@ fun LoadingStatusOverlay(message: String) {
             ) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(16.dp),
-                    color = Cyprus,
+                    color = MaterialTheme.colorScheme.primary,
                     strokeWidth = 2.dp
                 )
                 Text(
                     text = message,
-                    color = Cyprus,
+                    color = MaterialTheme.colorScheme.onSurface,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium
                 )
@@ -544,7 +549,7 @@ fun AssignmentCard(assignment: Assignment, onDownload: () -> Unit, onSubmit: () 
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
@@ -552,27 +557,30 @@ fun AssignmentCard(assignment: Assignment, onDownload: () -> Unit, onSubmit: () 
                 text = assignment.courseTitle,
                 fontWeight = FontWeight.Bold,
                 fontSize = 18.sp,
-                color = Cyprus
+                color = MaterialTheme.colorScheme.primary
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = assignment.assignmentTitle,
                 fontSize = 15.sp,
-                color = Color.Black.copy(alpha = 0.6f)
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
             )
             
-            HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp), color = Sand)
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 16.dp),
+                color = MaterialTheme.colorScheme.outlineVariant
+            )
             
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "Deadline: ",
-                    color = Cyprus,
+                    color = MaterialTheme.colorScheme.onSurface,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
                     text = assignment.deadline,
-                    color = Color(0xFFD32F2F),
+                    color = MaterialTheme.colorScheme.error,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -585,7 +593,7 @@ fun AssignmentCard(assignment: Assignment, onDownload: () -> Unit, onSubmit: () 
                     onClick = onDownload,
                     modifier = Modifier.weight(1f).height(48.dp),
                     shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.5.dp, Cyprus)
+                    border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
                 ) {
                     Icon(imageVector = Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
@@ -595,7 +603,7 @@ fun AssignmentCard(assignment: Assignment, onDownload: () -> Unit, onSubmit: () 
                     onClick = onSubmit,
                     modifier = Modifier.weight(1f).height(48.dp),
                     shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Cyprus)
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                 ) {
                     Icon(imageVector = Icons.Default.Upload, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
@@ -603,5 +611,90 @@ fun AssignmentCard(assignment: Assignment, onDownload: () -> Unit, onSubmit: () 
                 }
             }
         }
+    }
+}
+
+@Composable
+fun AssignlyBottomNavigation(
+    currentScreen: ScreenType,
+    onNavigate: (ScreenType) -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(12.dp)
+            .shadow(8.dp, RoundedCornerShape(24.dp)),
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surface
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp, horizontal = 12.dp),
+            horizontalArrangement = Arrangement.SpaceAround,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            NavigationItem(
+                icon = androidx.compose.material.icons.Icons.Default.Refresh,
+                label = "Tasks",
+                selected = currentScreen == ScreenType.PENDING,
+                onClick = { onNavigate(ScreenType.PENDING) }
+            )
+            NavigationItem(
+                icon = androidx.compose.material.icons.Icons.Default.Download,
+                label = "Schedule",
+                selected = currentScreen == ScreenType.TIMETABLE,
+                onClick = { onNavigate(ScreenType.TIMETABLE) }
+            )
+            NavigationItem(
+                icon = androidx.compose.material.icons.Icons.Default.Close,
+                label = "Files",
+                selected = currentScreen == ScreenType.DOWNLOADS,
+                onClick = { onNavigate(ScreenType.DOWNLOADS) }
+            )
+            NavigationItem(
+                icon = androidx.compose.material.icons.Icons.Default.Upload,
+                label = "History",
+                selected = currentScreen == ScreenType.HISTORICAL,
+                onClick = { onNavigate(ScreenType.HISTORICAL) }
+            )
+            NavigationItem(
+                icon = androidx.compose.material.icons.Icons.AutoMirrored.Filled.Logout,
+                label = "Settings",
+                selected = currentScreen == ScreenType.SETTINGS,
+                onClick = { onNavigate(ScreenType.SETTINGS) }
+            )
+        }
+    }
+}
+
+@Composable
+fun NavigationItem(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = color,
+            modifier = Modifier.size(24.dp)
+        )
+        Text(
+            text = label,
+            fontSize = 10.sp,
+            color = color,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+        )
     }
 }

@@ -18,29 +18,41 @@ private val LightColorScheme = lightColorScheme(
     onPrimary = White,
     primaryContainer = LightSand,
     onPrimaryContainer = Cyprus,
-    secondary = Sand,
-    onSecondary = Cyprus,
+    secondary = CyprusLight,
+    onSecondary = White,
+    secondaryContainer = Sand,
+    onSecondaryContainer = Cyprus,
     background = Sand,
     onBackground = Cyprus,
     surface = White,
     onSurface = Cyprus,
-    error = Color.Red,
-    onError = White
+    surfaceVariant = LightSand,
+    onSurfaceVariant = CyprusLight,
+    error = ErrorRed,
+    onError = White,
+    errorContainer = LightErrorRed,
+    onErrorContainer = ErrorRedDark
 )
 
 private val DarkColorScheme = darkColorScheme(
-    primary = CyprusLight,
+    primary = DarkPrimary,
     onPrimary = White,
-    primaryContainer = CyprusDark,
-    onPrimaryContainer = White,
-    secondary = CyprusDark,
+    primaryContainer = DarkPrimaryContainer,
+    onPrimaryContainer = DarkOnPrimaryContainer,
+    secondary = DarkSecondary,
     onSecondary = White,
-    background = Color(0xFF101418),
-    onBackground = Color(0xFFE5EAF0),
-    surface = Color(0xFF161B22),
-    onSurface = Color(0xFFE5EAF0),
-    error = Color(0xFFCF6679),
-    onError = Black
+    secondaryContainer = DarkSurfaceVariant,
+    onSecondaryContainer = DarkOnSurface,
+    background = DarkBackground,
+    onBackground = DarkOnBackground,
+    surface = DarkSurface,
+    onSurface = DarkOnSurface,
+    surfaceVariant = DarkSurfaceVariant,
+    onSurfaceVariant = DarkOnSurface,
+    error = DarkError,
+    onError = Black,
+    errorContainer = Color(0xFF401D24),
+    onErrorContainer = DarkError
 )
 
 @Composable
@@ -58,8 +70,11 @@ fun AssignmentCheckerTheme(
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as Activity).window
-            window.statusBarColor = colorScheme.primary.toArgb()
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !isDarkTheme
+            window.statusBarColor = colorScheme.background.toArgb()
+            window.navigationBarColor = colorScheme.background.toArgb()
+            val insetsController = WindowCompat.getInsetsController(window, view)
+            insetsController.isAppearanceLightStatusBars = !isDarkTheme
+            insetsController.isAppearanceLightNavigationBars = !isDarkTheme
         }
     }
 
