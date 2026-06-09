@@ -2752,7 +2752,7 @@ class PortalRepository {
 
     fun fetchTimetable(): List<TimetableLecture> {
         return try {
-            val timetableUrl = "$baseUrl/TimeTable.aspx"
+            val timetableUrl = "$baseUrl/Timetable.aspx"
             Log.d("PortalAuth", "Fetching timetable from: $timetableUrl")
 
             val request = Request.Builder()
@@ -2763,12 +2763,10 @@ class PortalRepository {
 
             val payload = client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    Log.e("PortalAuth", "fetchTimetable HTTP ${response.code}")
-                    return emptyList()
+                    throw PortalSystemException("fetchTimetable HTTP ${response.code}")
                 }
                 val body = response.body?.string() ?: run {
-                    Log.e("PortalAuth", "fetchTimetable empty server response")
-                    return emptyList()
+                    throw PortalSystemException("fetchTimetable empty server response")
                 }
                 detectPortalSystemErrors(body)
                 response.request.url.toString() to body
@@ -2778,76 +2776,101 @@ class PortalRepository {
 
             val notAuthenticated = isLoginPage(finalUrl, html) || !hasSessionCookiesForHost(baseHost)
             if (notAuthenticated) {
-                Log.d("PortalAuth", "Not authenticated for timetable")
-                return emptyList()
+                throw PortalSystemException("Not authenticated for timetable. Please log in again.")
             }
 
             val doc = Jsoup.parse(html)
             val lectures = mutableListOf<TimetableLecture>()
 
             // Find the timetable grid
-            val table = doc.select("table[id*='gvTimeTable']").firstOrNull()
-                ?: doc.select("table.Grid").firstOrNull()
-
-            if (table == null) {
-                Log.d("PortalAuth", "Timetable table not found")
-                return emptyList()
+            val tables = doc.select("table.Grid, table[id*='gvTimeTable']")
+            var targetTable: org.jsoup.nodes.Element? = null
+            for (t in tables) {
+                val text = t.text()
+                if (!text.contains("Father Name", ignoreCase = true) &&
+                    !text.contains("Roll No", ignoreCase = true) &&
+                    !text.contains("Student Information", ignoreCase = true) &&
+                    !text.contains("Demographics", ignoreCase = true)
+                ) {
+                    targetTable = t
+                    break
+                }
             }
 
-            val rows = table.select("tr")
-            Log.d("PortalAuth", "Timetable total rows: ${rows.size}")
+            if (targetTable == null) {
+                throw PortalSystemException("No timetable table found.")
+            }
 
-            for (i in 0 until rows.size) {
+            val rows = targetTable.select("tr")
+            if (rows.isEmpty()) return emptyList()
+
+            val timeHeaders = mutableListOf<String>()
+            val headerRow = rows.first()
+            val headerCells = headerRow?.select("th, td") ?: emptyList()
+            for (cell in headerCells) {
+                timeHeaders.add(cell.text().trim())
+            }
+
+            for (i in 1 until rows.size) {
                 val row = rows[i]
-                val cols = row.select("td")
-                if (cols.size < 8) continue // Basic validation
+                val cells = row.select("td, th")
+                if (cells.isEmpty()) continue
 
-                // Expected columns: Day, Time, Course (Name + Code), Room, Instructor, Duration, Credit Hours
-                // We need to be careful with column indices as they might vary slightly.
-                // Typical SIS timetable columns:
-                // 1: Day, 2: Time, 3: Course, 4: Room, 5: Instructor, 6: Duration, 7: Credit Hours
+                val day = cells.first()?.text()?.trim() ?: continue
+                if (day.isBlank() || day.lowercase() == "day") continue
 
-                val day = cols.getOrNull(1)?.text()?.trim().orEmpty()
-                val timeRange = cols.getOrNull(2)?.text()?.trim().orEmpty()
-                val courseRaw = cols.getOrNull(3)?.text()?.trim().orEmpty()
-                val room = cols.getOrNull(4)?.text()?.trim().orEmpty()
-                val instructor = cols.getOrNull(5)?.text()?.trim().orEmpty()
-                val duration = cols.getOrNull(6)?.text()?.trim().orEmpty()
-                val creditHours = cols.getOrNull(7)?.text()?.trim().orEmpty()
+                var slotIndex = 1
+                var cellIndex = 1
 
-                if (courseRaw.isBlank()) continue
+                while (cellIndex < cells.size && slotIndex < timeHeaders.size) {
+                    val cell = cells[cellIndex]
+                    val colspan = cell.attr("colspan").toIntOrNull() ?: 1
+                    val cellText = cell.text().trim()
 
-                // Parse Course Name and Code
-                // Often formatted as "COURSE_NAME (COURSE_CODE)" or similar
-                val courseName = courseRaw.substringBeforeLast("(").trim()
-                val courseCode = courseRaw.substringAfterLast("(", "").removeSuffix(")").trim()
+                    if (cellText.isNotBlank() && cellText != "*" && cellText != "—" && cellText != "-" && !cellText.matches(Regex("^-+$")) && !cellText.contains("Lunch", ignoreCase = true)) {
+                        val startTimeStr = extractStartTime(timeHeaders.getOrNull(slotIndex))
+                        val endTimeStr = extractEndTime(timeHeaders.getOrNull(slotIndex + colspan - 1))
 
-                // Parse Time Range "08:30 AM - 10:00 AM"
-                val times = timeRange.split("-").map { it.trim() }
-                val startTime = times.getOrNull(0).orEmpty()
-                val endTime = times.getOrNull(1).orEmpty()
+                        val (courseName, room, instructor, sessionType) = extractTimetableLectureData(cell)
 
-                lectures.add(
-                    TimetableLecture(
-                        courseName = if (courseName.isBlank()) courseRaw else courseName,
-                        courseCode = courseCode,
-                        instructor = instructor,
-                        room = room,
-                        day = day,
-                        startTime = startTime,
-                        endTime = endTime,
-                        duration = duration,
-                        creditHours = creditHours
-                    )
-                )
+                        lectures.add(
+                            TimetableLecture(
+                                courseName = courseName,
+                                courseCode = "",
+                                instructor = instructor,
+                                room = room,
+                                day = day,
+                                startTime = startTimeStr,
+                                endTime = endTimeStr,
+                                duration = "",
+                                creditHours = "",
+                                sessionType = sessionType
+                            )
+                        )
+                    }
+                    slotIndex += colspan
+                    cellIndex++
+                }
             }
 
             Log.d("PortalAuth", "Fetched ${lectures.size} timetable lectures")
             lectures
         } catch (e: Exception) {
             Log.e("PortalAuth", "Error fetching timetable: ${e.message}", e)
-            emptyList()
+            throw if (e !is PortalSystemException) PortalSystemException(e.message ?: "Unknown error") else e
         }
+    }
+
+    private fun extractStartTime(timeRange: String?): String {
+        if (timeRange.isNullOrBlank()) return ""
+        val parts = timeRange.split(" to ", "-", " - ")
+        return parts.getOrNull(0)?.trim() ?: timeRange
+    }
+
+    private fun extractEndTime(timeRange: String?): String {
+        if (timeRange.isNullOrBlank()) return ""
+        val parts = timeRange.split(" to ", "-", " - ")
+        return parts.getOrNull(1)?.trim() ?: extractStartTime(timeRange)
     }
 
     private fun normalizeUrl(href: String?, resolveBaseUrl: String = baseUrl): String {
@@ -2858,5 +2881,91 @@ class PortalRepository {
         return runCatching {
             resolveBaseUrl.toHttpUrl().resolve(trimmed)?.toString().orEmpty()
         }.getOrDefault("")
+    }
+
+    private data class ParsedLecture(
+        val courseName: String,
+        val room: String,
+        val instructor: String,
+        val sessionType: String
+    )
+
+    private fun extractTimetableLectureData(cell: org.jsoup.nodes.Element): ParsedLecture {
+        val cellText = cell.text().trim()
+        val htmlParts = cell.html()
+            .split(Regex("(?i)<br\\s*/?>"))
+            .map { org.jsoup.Jsoup.parse(it).text().trim() }
+            .filter { it.isNotEmpty() }
+            
+        var courseName = cellText
+        var room = "Unknown"
+        var instructor = "Unknown"
+        
+        if (htmlParts.size >= 3) {
+            courseName = htmlParts[0]
+            var roomPart = htmlParts[1]
+            // Find instructor: scan remaining parts for the first one that looks like a name
+            instructor = "Unknown"
+            for (i in 2 until htmlParts.size) {
+                val candidate = htmlParts[i]
+                    .replace(Regex("\\[.*?\\]"), "")   // strip [50M] etc
+                    .replace(Regex("\\(.*?\\)"), "")   // strip (56M) etc
+                    .replace(Regex("\\b\\d+\\b"), "")  // strip standalone numbers
+                    .trim()
+                // A valid instructor name must have at least 2 letters and not be empty
+                if (candidate.length >= 2 && candidate.any { it.isLetter() }) {
+                    instructor = candidate
+                    break
+                }
+            }
+            
+            // Strip brackets [50M]
+            roomPart = roomPart.replace(Regex("\\[[^\\]]+\\]"), "").trim()
+            
+            // Check parentheses to separate room code from capacity
+            val parensMatch = Regex("\\(([^)]+)\\)").find(roomPart)
+            if (parensMatch != null) {
+                val inside = parensMatch.groupValues[1].trim()
+                if (inside.matches(Regex("\\d+M?", RegexOption.IGNORE_CASE))) {
+                    // It's a capacity like (56M) or (45). Room name is outside.
+                    room = roomPart.replace(parensMatch.value, "").trim()
+                } else {
+                    // It's a room code like (S-312). Room name is inside.
+                    room = inside
+                }
+            } else {
+                room = roomPart // If no parens, the whole part is the room
+            }
+        } else {
+            // Fallback for single-line text
+            val text = cellText.replace(Regex("(?:\\s+\\d+)+$"), "").trim()
+            val formatB = Regex("^(.*?)\\s*\\(([^)]+)\\)\\s*\\[[^\\]]+\\]\\s*(.*)$")
+            val matchB = formatB.find(text)
+            if (matchB != null) {
+                courseName = matchB.groupValues[1].trim()
+                room = matchB.groupValues[2].trim()
+                instructor = matchB.groupValues[3].trim()
+            } else {
+                val formatA = Regex("^(.*?)\\s+([A-Za-z0-9\\-]+)\\s*\\([^)]+\\)\\s*(.*)$")
+                val matchA = formatA.find(text)
+                if (matchA != null) {
+                    courseName = matchA.groupValues[1].trim()
+                    room = matchA.groupValues[2].trim()
+                    instructor = matchA.groupValues[3].trim()
+                }
+            }
+        }
+        
+        var sessionType = "Lecture"
+        if (courseName.contains("Lab", ignoreCase = true) || cellText.contains("Lab", ignoreCase = true)) {
+            sessionType = "Lab"
+        }
+        
+        val cleanCourseName = courseName
+            .replace(Regex("(?i)\\b(theory|lab|computer)\\b"), "")
+            .replace(Regex("\\b\\d{2}\\b$"), "")
+            .trim()
+            
+        return ParsedLecture(cleanCourseName, room, instructor, sessionType)
     }
 }

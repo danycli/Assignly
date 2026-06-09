@@ -15,7 +15,8 @@ data class TimetableLecture(
     val startTime: String,
     val endTime: String,
     val duration: String,
-    val creditHours: String
+    val creditHours: String,
+    val sessionType: String = "Lecture"
 ) {
     val id: String get() = "${courseCode}_${day}_${startTime}"
 

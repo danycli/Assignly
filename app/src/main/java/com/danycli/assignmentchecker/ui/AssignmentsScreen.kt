@@ -209,18 +209,16 @@ fun AssignmentsList(
                 }
 
                 item {
-                    val currentDay = remember { LocalDate.now().dayOfWeek.name.lowercase().capitalize() }
-                    val todayLectures = remember(timetableLectures) { timetableLectures.filter { it.day.equals(currentDay, ignoreCase = true) } }
-                    val nextOrCurrentClass = remember(todayLectures) {
-                        todayLectures.firstOrNull { it.isCurrent() } 
-                            ?: todayLectures.filter { it.isUpcoming() }.minByOrNull { it.startTime }
-                    }
-
-                    if (nextOrCurrentClass != null) {
-                        NextClassDashboardWidget(
-                            lecture = nextOrCurrentClass,
-                            onClick = onNavigateToTimetable
+                    OutlinedButton(
+                        onClick = onNavigateToTimetable,
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            contentColor = MaterialTheme.colorScheme.primary
                         )
+                    ) {
+                        Text("View Timetable", fontWeight = FontWeight.Bold)
                     }
                 }
 
@@ -522,72 +520,6 @@ fun AssignmentsList(
     }
 }
 
-@Composable
-fun NextClassDashboardWidget(lecture: TimetableLecture, onClick: () -> Unit) {
-    val isLive = remember(lecture) { lecture.isCurrent() }
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .shadow(1.dp, shape = RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.04f)),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.1f))
-    ) {
-        Row(
-            modifier = Modifier.padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = if (isLive) "Currently In" else "Next Class",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (isLive) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    text = lecture.courseName,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = "Room ${lecture.room} • ${lecture.startTime}",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            
-            val countdown = remember(lecture) {
-                val now = LocalTime.now()
-                if (isLive) {
-                    val end = runCatching { LocalTime.parse(lecture.endTime, DateTimeFormatter.ofPattern("hh:mm a", Locale.US)) }.getOrNull()
-                    val diff = end?.let { now.until(it, ChronoUnit.MINUTES) } ?: 0
-                    "Ends in $diff min"
-                } else {
-                    val start = runCatching { LocalTime.parse(lecture.startTime, DateTimeFormatter.ofPattern("hh:mm a", Locale.US)) }.getOrNull()
-                    val diff = start?.let { now.until(it, ChronoUnit.MINUTES) } ?: 0
-                    if (diff < 60) "$diff min"
-                    else "${diff / 60}h ${diff % 60}m"
-                }
-            }
-            
-            Surface(
-                color = if (isLive) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary,
-                shape = RoundedCornerShape(50.dp)
-            ) {
-                Text(
-                    text = countdown,
-                    color = Color.White,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                )
-            }
-        }
-    }
-}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable

@@ -83,6 +83,15 @@ private fun AppEntry() {
     var showSplash by remember { mutableStateOf(true) }
     var startupCredentials by remember { mutableStateOf<Pair<String, String>?>(null) }
     var appSettings by remember { mutableStateOf(AppSettingsStore.get(context)) }
+    var showNotificationDialog by remember { mutableStateOf(false) }
+
+    // Permission launcher for initial prompt
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        NotificationPromptStore.markInitialPromptShown(context)
+        // If denied, we'll handle it via the daily re-prompt
+    }
 
     LaunchedEffect(Unit) {
         val splashStart = System.currentTimeMillis()
@@ -97,6 +106,28 @@ private fun AppEntry() {
         showSplash = false
     }
 
+    // Handle notification prompt logic after splash
+    LaunchedEffect(showSplash) {
+        if (showSplash) return@LaunchedEffect
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            if (!NotificationPromptStore.hasShownInitialPrompt(context)) {
+                // First launch: request permission directly
+                permissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                return@LaunchedEffect
+            }
+        }
+
+        // Track daily opens and check for re-prompt
+        val dailyCount = NotificationPromptStore.incrementDailyOpen(context)
+        if (dailyCount >= 3 &&
+            !NotificationGate.areNotificationsEnabled(context) &&
+            !NotificationPromptStore.hasDailyPromptBeenShown(context)
+        ) {
+            showNotificationDialog = true
+        }
+    }
+
     AssignmentCheckerTheme(themeMode = appSettings.themeMode) {
         if (showSplash) {
             AppSplashScreen()
@@ -109,9 +140,68 @@ private fun AppEntry() {
                 onSettingsChange = { appSettings = it }
             )
         }
+
+        // Notification re-prompt dialog
+        if (showNotificationDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    showNotificationDialog = false
+                    NotificationPromptStore.markDailyPromptShown(context)
+                },
+                icon = {
+                    Icon(
+                        Icons.Default.Notifications,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(32.dp)
+                    )
+                },
+                title = {
+                    Text(
+                        "Stay Updated",
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Text(
+                        "Enable notifications to get instant alerts for new assignments, deadline reminders, and important updates from your portal.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showNotificationDialog = false
+                            NotificationPromptStore.markDailyPromptShown(context)
+                            // Open app notification settings
+                            val intent = android.content.Intent().apply {
+                                action = android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS
+                                putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                            }
+                            context.startActivity(intent)
+                        },
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Turn On", fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            showNotificationDialog = false
+                            NotificationPromptStore.markDailyPromptShown(context)
+                        }
+                    ) {
+                        Text("Not Now")
+                    }
+                },
+                shape = RoundedCornerShape(20.dp)
+            )
+        }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     viewModel: MainViewModel,
@@ -144,6 +234,8 @@ fun MainScreen(
     val context = LocalContext.current
     var activeUploads by remember { mutableStateOf<List<QueuedUpload>>(emptyList()) }
     var activeDownloads by remember { mutableStateOf<List<QueuedDownload>>(emptyList()) }
+    var showTimetableModal by remember { mutableStateOf(false) }
+    var timetableError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -163,7 +255,6 @@ fun MainScreen(
         !isLoggedIn -> AppPage.LOGIN
         currentScreen == ScreenType.SETTINGS -> AppPage.SETTINGS
         currentScreen == ScreenType.DOWNLOADS -> AppPage.DOWNLOADS
-        currentScreen == ScreenType.TIMETABLE -> AppPage.TIMETABLE
         currentScreen == ScreenType.HISTORICAL -> AppPage.HISTORICAL
         else -> AppPage.PENDING
     }
@@ -234,11 +325,18 @@ fun MainScreen(
                 historical = dashboardData.historicalAssignments
             )
         }
-        
-        val fetchedTimetable = viewModel.loadTimetable()
-        if (fetchedTimetable.isNotEmpty()) {
-            timetableLectures = fetchedTimetable
-            TimetableCacheStore.saveSnapshot(context, fetchedTimetable)
+        timetableError = null
+        try {
+            val fetchedTimetable = viewModel.loadTimetable()
+            if (fetchedTimetable.isNotEmpty()) {
+                timetableLectures = fetchedTimetable
+                TimetableCacheStore.saveSnapshot(context, fetchedTimetable)
+            }
+        } catch (e: PortalSystemException) {
+            timetableError = e.message
+            Log.e("MainActivity", "Timetable fetch failed: ${e.message}")
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Timetable fetch unknown error", e)
         }
     }
 
@@ -284,10 +382,7 @@ fun MainScreen(
                 currentScreen = ScreenType.PENDING
                 pendingExitConfirmation = false
             }
-            AppPage.TIMETABLE -> {
-                currentScreen = ScreenType.PENDING
-                pendingExitConfirmation = false
-            }
+
             AppPage.DOWNLOADS -> {
                 currentScreen = ScreenType.PENDING
                 pendingExitConfirmation = false
@@ -724,22 +819,7 @@ fun MainScreen(
                             },
                             lastSyncedMs = lastSyncedMs,
                             timetableLectures = timetableLectures,
-                            onNavigateToTimetable = { currentScreen = ScreenType.TIMETABLE }
-                        )
-                    }
-                    AppPage.TIMETABLE -> {
-                        TimetableScreen(
-                            lectures = timetableLectures,
-                            isRefreshing = isPendingRefreshing,
-                            onRefresh = {
-                                if (isPendingRefreshing) return@TimetableScreen
-                                isPendingRefreshing = true
-                                scope.launch {
-                                    runCatching { refreshAssignmentsState() }
-                                    isPendingRefreshing = false
-                                }
-                            },
-                            lastSyncedMs = lastSyncedMs
+                            onNavigateToTimetable = { showTimetableModal = true }
                         )
                     }
                     AppPage.DOWNLOADS -> {
@@ -920,20 +1000,26 @@ fun MainScreen(
                 val loadingMessage = when {
                     pageForUi == AppPage.LOGIN -> "Signing in..."
                     loadingTargetScreen == ScreenType.HISTORICAL -> "Loading historical assignments..."
-                    loadingTargetScreen == ScreenType.TIMETABLE -> "Loading timetable..."
                     else -> "Loading assignments..."
                 }
                 LoadingStatusOverlay(message = loadingMessage)
             }
 
-            if (isLoggedIn && !showCaptchaDialog) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-                    AssignlyBottomNavigation(
-                        currentScreen = currentScreen,
-                        onNavigate = { currentScreen = it }
-                    )
-                }
-            }
+
+        }
+    }
+
+    if (showTimetableModal) {
+        ModalBottomSheet(
+            onDismissRequest = { showTimetableModal = false },
+            containerColor = MaterialTheme.colorScheme.background,
+            dragHandle = { BottomSheetDefaults.DragHandle() }
+        ) {
+            TimetableBottomSheetContent(
+                lectures = timetableLectures,
+                timetableError = timetableError,
+                onClose = { showTimetableModal = false }
+            )
         }
     }
 
