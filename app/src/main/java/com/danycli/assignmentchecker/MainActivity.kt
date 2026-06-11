@@ -347,9 +347,9 @@ fun MainScreen(
             updateDialogInfo = null
             return
         }
-        if (!UpdateNotificationStore.shouldNotifyToday(context)) return
+        // Always show the in-app dialog when an update is available,
+        // regardless of whether the background notification already fired today.
         updateDialogInfo = remoteInfo
-        UpdateNotificationStore.markNotifiedToday(context, remoteInfo.latestVersionCode)
     }
 
     LaunchedEffect(appSettings) {
