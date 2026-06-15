@@ -333,7 +333,15 @@ fun MainScreen(
                 TimetableCacheStore.saveSnapshot(context, fetchedTimetable)
             }
         } catch (e: PortalSystemException) {
-            timetableError = e.message
+            // Suppress network connectivity errors (e.g. no internet) — cached data is shown
+            val isNetworkError = e.cause is java.net.UnknownHostException
+                    || e.message?.contains("Unable to resolve host") == true
+                    || e.message?.contains("No address associated with hostname") == true
+                    || e.cause is java.net.ConnectException
+                    || e.cause is java.net.SocketTimeoutException
+            if (!isNetworkError) {
+                timetableError = e.message
+            }
             Log.e("MainActivity", "Timetable fetch failed: ${e.message}")
         } catch (e: Exception) {
             Log.e("MainActivity", "Timetable fetch unknown error", e)
