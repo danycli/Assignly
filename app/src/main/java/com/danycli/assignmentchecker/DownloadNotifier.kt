@@ -4,6 +4,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
+import android.graphics.BitmapFactory
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 
@@ -14,8 +15,11 @@ object DownloadNotifier {
     fun showProgress(context: Context, downloadId: String, fileName: String, message: String = "Downloading…") {
         if (!NotificationGate.areNotificationsEnabled(context)) return
         ensureChannel(context)
+        val largeIcon = NotificationGate.getAppIconBitmap(context)
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setLargeIcon(largeIcon)
+            .setColor(0xFF004643.toInt())
             .setContentTitle("Downloading: $fileName")
             .setContentText(message)
             .setOngoing(true)
@@ -27,8 +31,11 @@ object DownloadNotifier {
     fun showSuccess(context: Context, downloadId: String, fileName: String) {
         if (!NotificationGate.areNotificationsEnabled(context)) return
         ensureChannel(context)
+        val largeIcon = NotificationGate.getAppIconBitmap(context)
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setLargeIcon(largeIcon)
+            .setColor(0xFF004643.toInt())
             .setContentTitle("Download complete")
             .setContentText(fileName)
             .setAutoCancel(true)
@@ -39,8 +46,11 @@ object DownloadNotifier {
     fun showFailure(context: Context, downloadId: String, fileName: String, reason: String?) {
         if (!NotificationGate.areNotificationsEnabled(context)) return
         ensureChannel(context)
+        val largeIcon = NotificationGate.getAppIconBitmap(context)
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setLargeIcon(largeIcon)
+            .setColor(0xFF004643.toInt())
             .setContentTitle("Download failed")
             .setContentText(reason?.ifBlank { fileName } ?: fileName)
             .setAutoCancel(true)

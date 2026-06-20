@@ -19,12 +19,50 @@ open class MainViewModel : ViewModel() {
     private val uploadAssignmentUseCase = UploadAssignmentUseCase(repository)
     private val portalSessionUseCase = PortalSessionUseCase(repository)
     private val loadTimetableUseCase = LoadTimetableUseCase(repository)
+    private val loadEnrolledCoursesUseCase = LoadEnrolledCoursesUseCase(repository)
+    private val loadCourseFilesUseCase = LoadCourseFilesUseCase(repository)
 
     open suspend fun loadDashboardData(): DashboardLoadResult = loadDashboardUseCase()
 
     open suspend fun loadHistoricalAndProfile(): Pair<List<Assignment>, ByteArray?> = loadHistoryUseCase()
 
     open suspend fun loadTimetable(): List<TimetableLecture> = loadTimetableUseCase()
+
+    open suspend fun loadEnrolledCourses(): EnrolledCoursesData = loadEnrolledCoursesUseCase()
+
+    open suspend fun loadCourseFiles(courseCode: String, courseTitle: String): List<CourseFile> = loadCourseFilesUseCase(courseCode, courseTitle)
+
+    open suspend fun loadAttendanceSummary(resolvedCodes: Map<String, String>? = null): List<AttendanceSummary> = withContext(Dispatchers.IO) {
+        repository.fetchAttendanceSummary(resolvedCodes)
+    }
+
+    open suspend fun loadAttendanceDetail(courseCode: String): List<AttendanceDetail> = withContext(Dispatchers.IO) {
+        repository.fetchAttendanceDetail(courseCode)
+    }
+
+    open suspend fun loadGrades(): GpaSummary = withContext(Dispatchers.IO) {
+        repository.fetchGrades()
+    }
+
+    open suspend fun loadMarks(courseCode: String): List<MarksCategory> = withContext(Dispatchers.IO) {
+        repository.fetchMarks(courseCode)
+    }
+
+    open suspend fun fetchPageHtmlDebug(page: String): String = withContext(Dispatchers.IO) {
+        repository.fetchPageHtmlDebug(page)
+    }
+
+    open suspend fun loadProfile(): StudentProfile = withContext(Dispatchers.IO) {
+        repository.fetchStudentProfile()
+    }
+
+    open suspend fun loadPhotoBytes(): ByteArray? = withContext(Dispatchers.IO) {
+        repository.fetchCurrentStudentPhoto()
+    }
+
+    open suspend fun loadFeeDetails(): FeeSnapshot = withContext(Dispatchers.IO) {
+        repository.fetchFeeDetails()
+    }
 
     open suspend fun login(username: String, password: String): LoginResult = loginUseCase(username, password)
 

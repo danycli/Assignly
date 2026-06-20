@@ -42,6 +42,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.toSize
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.material.icons.filled.Close
+import com.danycli.assignmentchecker.RegistrationHistoryStore
 import com.danycli.assignmentchecker.BuildConfig
 import com.danycli.assignmentchecker.CAPTCHA_RETRY_DELAY_MS
 import com.danycli.assignmentchecker.MainViewModel
@@ -94,6 +103,13 @@ fun LoginScreen(
     var usernameFocused by remember { mutableStateOf(false) }
     var passwordFocused by remember { mutableStateOf(false) }
     val isDark = isSystemInDarkTheme()
+
+    val context = LocalContext.current
+    var savedRegistrations by remember {
+        mutableStateOf(RegistrationHistoryStore.getSavedRegistrations(context))
+    }
+    var isDropdownExpanded by remember { mutableStateOf(false) }
+    var textFieldSize by remember { mutableStateOf(androidx.compose.ui.geometry.Size.Zero) }
 
     Box(
         modifier = Modifier
@@ -166,41 +182,119 @@ fun LoginScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                OutlinedTextField(
-                    value = username,
-                    onValueChange = { username = it },
-                    label = { Text("Registration Number", fontSize = 12.sp, fontWeight = FontWeight.Bold) },
-                    placeholder = { Text("SP25-BCS-001", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .onFocusChanged { usernameFocused = it.isFocused },
-                    shape = RoundedCornerShape(16.dp),
-                    enabled = !isLoading,
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
-                        focusedLabelColor = MaterialTheme.colorScheme.primary,
-                        unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                        disabledBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.1f),
-                        disabledLabelColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                        disabledTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                        cursorColor = MaterialTheme.colorScheme.primary,
-                        focusedContainerColor = MaterialTheme.colorScheme.surface,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-                        disabledContainerColor = MaterialTheme.colorScheme.surface,
-                        focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                        unfocusedTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
-                    ),
-                    leadingIcon = {
-                        Icon(
-                            Icons.Default.Person,
-                            contentDescription = null,
-                            tint = if (usernameFocused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                            modifier = Modifier.size(20.dp)
-                        )
+                val filteredList = remember(username, savedRegistrations) {
+                    if (username.isBlank()) {
+                        savedRegistrations
+                    } else {
+                        savedRegistrations.filter { it.contains(username, ignoreCase = true) }
                     }
-                )
+                }
+
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = username,
+                        onValueChange = { 
+                            username = it
+                            isDropdownExpanded = true
+                        },
+                        label = { Text("Registration Number", fontSize = 12.sp, fontWeight = FontWeight.Bold) },
+                        placeholder = { Text("SP25-BCS-001", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { 
+                                usernameFocused = it.isFocused 
+                                if (it.isFocused) {
+                                    isDropdownExpanded = true
+                                }
+                            }
+                            .onGloballyPositioned { coordinates ->
+                                textFieldSize = coordinates.size.toSize()
+                            },
+                        shape = RoundedCornerShape(16.dp),
+                        enabled = !isLoading,
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                            focusedLabelColor = MaterialTheme.colorScheme.primary,
+                            unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            disabledBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.1f),
+                            disabledLabelColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                            disabledTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                            cursorColor = MaterialTheme.colorScheme.primary,
+                            focusedContainerColor = MaterialTheme.colorScheme.surface,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                            disabledContainerColor = MaterialTheme.colorScheme.surface,
+                            focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                            unfocusedTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+                        ),
+                        leadingIcon = {
+                            Icon(
+                                Icons.Default.Person,
+                                contentDescription = null,
+                                tint = if (usernameFocused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    )
+
+                    if (filteredList.isNotEmpty() && usernameFocused) {
+                        DropdownMenu(
+                            expanded = isDropdownExpanded,
+                            onDismissRequest = { isDropdownExpanded = false },
+                            modifier = Modifier
+                                .width(with(LocalDensity.current) { textFieldSize.width.toDp() })
+                                .background(MaterialTheme.colorScheme.surface),
+                            properties = PopupProperties(focusable = false)
+                        ) {
+                            filteredList.forEach { regNum ->
+                                DropdownMenuItem(
+                                    onClick = {
+                                        username = regNum
+                                        isDropdownExpanded = false
+                                    },
+                                    text = {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Person,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(12.dp))
+                                                Text(
+                                                    text = regNum,
+                                                    style = MaterialTheme.typography.bodyLarge,
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    fontWeight = FontWeight.Medium
+                                                )
+                                            }
+                                            IconButton(
+                                                onClick = {
+                                                    RegistrationHistoryStore.removeRegistration(context, regNum)
+                                                    savedRegistrations = RegistrationHistoryStore.getSavedRegistrations(context)
+                                                },
+                                                modifier = Modifier.size(32.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Close,
+                                                    contentDescription = "Remove registration history",
+                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
 
                 OutlinedTextField(
                     value = password,
@@ -211,9 +305,16 @@ fun LoginScreen(
                         .onFocusChanged { passwordFocused = it.isFocused },
                     shape = RoundedCornerShape(16.dp),
                     visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Password,
+                        autoCorrect = false
+                    ),
                     trailingIcon = {
                         val image = if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff
-                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                        IconButton(
+                            onClick = { passwordVisible = !passwordVisible },
+                            enabled = !isLoading
+                        ) {
                             Icon(
                                 imageVector = image,
                                 contentDescription = null,

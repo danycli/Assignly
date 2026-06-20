@@ -4,6 +4,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
+import android.graphics.BitmapFactory
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 
@@ -14,8 +15,11 @@ object UploadNotifier {
     fun showProgress(context: Context, uploadId: String, assignmentTitle: String, message: String = "Uploading…") {
         if (!NotificationGate.areNotificationsEnabled(context)) return
         ensureChannel(context)
+        val largeIcon = NotificationGate.getAppIconBitmap(context)
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setLargeIcon(largeIcon)
+            .setColor(0xFF004643.toInt())
             .setContentTitle("Uploading: $assignmentTitle")
             .setContentText(message)
             .setOngoing(true)
@@ -27,8 +31,11 @@ object UploadNotifier {
     fun showSuccess(context: Context, uploadId: String, assignmentTitle: String) {
         if (!NotificationGate.areNotificationsEnabled(context)) return
         ensureChannel(context)
+        val largeIcon = NotificationGate.getAppIconBitmap(context)
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setLargeIcon(largeIcon)
+            .setColor(0xFF004643.toInt())
             .setContentTitle("Upload complete")
             .setContentText(assignmentTitle)
             .setAutoCancel(true)
@@ -39,8 +46,11 @@ object UploadNotifier {
     fun showFailure(context: Context, uploadId: String, assignmentTitle: String, reason: String?) {
         if (!NotificationGate.areNotificationsEnabled(context)) return
         ensureChannel(context)
+        val largeIcon = NotificationGate.getAppIconBitmap(context)
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setLargeIcon(largeIcon)
+            .setColor(0xFF004643.toInt())
             .setContentTitle("Upload failed")
             .setContentText(reason?.ifBlank { assignmentTitle } ?: assignmentTitle)
             .setAutoCancel(true)

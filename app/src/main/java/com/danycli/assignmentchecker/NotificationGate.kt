@@ -18,4 +18,16 @@ object NotificationGate {
         }
         return NotificationManagerCompat.from(context).areNotificationsEnabled()
     }
+
+    fun getAppIconBitmap(context: Context): android.graphics.Bitmap? {
+        return runCatching {
+            val drawable = ContextCompat.getDrawable(context, R.mipmap.ic_launcher) ?: return null
+            val size = (192 * context.resources.displayMetrics.density).toInt()
+            val bitmap = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(bitmap)
+            drawable.setBounds(0, 0, size, size)
+            drawable.draw(canvas)
+            bitmap
+        }.getOrNull()
+    }
 }

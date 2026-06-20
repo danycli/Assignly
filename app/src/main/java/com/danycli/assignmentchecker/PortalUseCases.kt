@@ -98,3 +98,19 @@ class LoadTimetableUseCase(private val repository: PortalRepository) {
         }
     }
 }
+
+class LoadEnrolledCoursesUseCase(private val repository: PortalRepository) {
+    suspend operator fun invoke(): EnrolledCoursesData {
+        return withContext(Dispatchers.IO) {
+            repository.fetchEnrolledCourses()
+        }
+    }
+}
+
+class LoadCourseFilesUseCase(private val repository: PortalRepository) {
+    suspend operator fun invoke(courseCode: String, courseTitle: String): List<CourseFile> {
+        return withContext(Dispatchers.IO) {
+            repository.fetchCourseFiles(courseCode, courseTitle)
+        }
+    }
+}

@@ -17,6 +17,27 @@ const val CAPTCHA_RETRY_DELAY_MS = 250L
 const val CAPTCHA_BACKGROUND_RECHECK_ATTEMPTS = 2
 const val UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L
 
+fun isNetworkError(e: Throwable): Boolean {
+    var current: Throwable? = e
+    while (current != null) {
+        if (current is java.net.UnknownHostException ||
+            current is java.net.ConnectException ||
+            current is java.net.SocketTimeoutException ||
+            current is java.net.NoRouteToHostException ||
+            current is javax.net.ssl.SSLException ||
+            current.message?.contains("Unable to resolve host", ignoreCase = true) == true ||
+            current.message?.contains("No address associated with hostname", ignoreCase = true) == true ||
+            current.message?.contains("failed to connect to", ignoreCase = true) == true ||
+            current.message?.contains("route to host", ignoreCase = true) == true ||
+            current.message?.contains("network", ignoreCase = true) == true
+        ) {
+            return true
+        }
+        current = current.cause
+    }
+    return false
+}
+
 fun mapLoginErrorToMessage(message: String?): String {
     val m = message?.lowercase().orEmpty()
     if (m.contains("portal server is currently overloaded") || m.contains(" experiencing a technical runtime error")) {
@@ -257,3 +278,74 @@ fun uriToFile(context: Context, uri: Uri): File? {
         null
     }
 }
+
+fun isDeviceOnline(context: Context): Boolean {
+    val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager ?: return false
+    val activeNetwork = cm.activeNetwork ?: return false
+    val capabilities = cm.getNetworkCapabilities(activeNetwork) ?: return false
+    return capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+}
+
+fun parseCreditHoursValue(creditHoursStr: String): Double {
+    val clean = creditHoursStr.trim()
+    val parenthesisIndex = clean.indexOf('(')
+    val numberPart = if (parenthesisIndex != -1) {
+        clean.substring(0, parenthesisIndex).trim()
+    } else {
+        clean
+    }
+    val numberRegex = Regex("\\d+(\\.\\d+)?")
+    val match = numberRegex.find(numberPart)
+    return match?.value?.toDoubleOrNull() ?: 0.0
+}
+
+fun formatCreditHours(value: Double): String {
+    return if (value % 1.0 == 0.0) {
+        value.toInt().toString()
+    } else {
+        value.toString()
+    }
+}
+
+fun parseDateStringToEpoch(dateStr: String): Long {
+    val clean = dateStr.trim().lowercase()
+    if (clean.isEmpty()) return 0L
+    val cleanDateStr = clean.replace(Regex("[/\\s]+"), "-")
+    val dateFormats = listOf(
+        "dd-MMM-yyyy",
+        "dd-MMM-yy",
+        "dd-MM-yyyy",
+        "yyyy-MM-dd"
+    )
+    for (fmt in dateFormats) {
+        try {
+            val sdf = java.text.SimpleDateFormat(fmt, java.util.Locale.US)
+            val d = sdf.parse(cleanDateStr)
+            if (d != null) {
+                return d.time
+            }
+        } catch (e: Exception) {
+            // continue
+        }
+    }
+    return 0L
+}
+
+fun getRelativeDateString(epochMs: Long): String {
+    if (epochMs <= 0L) return ""
+    val now = System.currentTimeMillis()
+    val diffMs = now - epochMs
+    if (diffMs < 0) {
+        return "Today"
+    }
+    val diffDays = (diffMs / (24 * 60 * 60 * 1000L)).toInt()
+    return when {
+        diffDays == 0 -> "Today"
+        diffDays == 1 -> "Yesterday"
+        diffDays < 7 -> "$diffDays days ago"
+        diffDays < 30 -> "${diffDays / 7} weeks ago"
+        else -> "${diffDays / 30} months ago"
+    }
+}
+
+

@@ -83,12 +83,16 @@ class PortalRepository {
 
     private val portalDeadlineFormatter = DateTimeFormatter.ofPattern("MMM dd ,yyyy HH:mm", Locale.US)
     private val portalDeadlineZoneId = ZoneId.systemDefault()
+    private val coursePostbackTargets = mutableMapOf<String, String>()
+    private val courseTitleToCodeMap = mutableMapOf<String, String>()
+    private val courseTitleToCreditMap = mutableMapOf<String, String>()
+    private var latestSemesterName = ""
 
     private val postBackPrefix = "portal-postback:"
     private data class PostBackInfo(val target: String, val argument: String)
     private data class PostBackLink(val info: PostBackInfo, val sourcePageUrl: String?)
     private data class HtmlDownloadCandidate(val url: String? = null, val postBackInfo: PostBackInfo? = null)
-    private data class StudentProfile(val name: String?, val rollNo: String?, val program: String?)
+    private data class InternalStudentProfile(val name: String?, val rollNo: String?, val program: String?)
     private data class AttendanceColumnMapping(
         val courseIndex: Int,
         val theoryPercentIndex: Int,
@@ -173,7 +177,7 @@ class PortalRepository {
         return null
     }
 
-    private fun parseStudentProfileFromHtml(html: String): StudentProfile {
+    private fun parseStudentProfileFromHtml(html: String): InternalStudentProfile {
         val doc = Jsoup.parse(html)
 
         val tablePairs = linkedMapOf<String, String>()
@@ -202,7 +206,7 @@ class PortalRepository {
             ?: doc.select("[id*=Program], [id*=lblProgram]").firstOrNull()?.text()?.trim()?.takeIf { it.isNotEmpty() && !it.equals("NA", true) }
 
         val name = parseStudentNameFromHtml(html)
-        return StudentProfile(name = name, rollNo = rollNo, program = program)
+        return InternalStudentProfile(name = name, rollNo = rollNo, program = program)
     }
 
     private fun parseStudentPhotoUrlFromHtml(html: String, pageUrl: String): String? {
@@ -245,7 +249,7 @@ class PortalRepository {
 
     private fun doesProfileMatchRequestedUsername(
         requestedUsername: String,
-        profile: StudentProfile,
+        profile: InternalStudentProfile,
         html: String
     ): Boolean {
         val parts = requestedUsername.trim().split("-").map { it.trim() }.filter { it.isNotEmpty() }
@@ -318,7 +322,7 @@ class PortalRepository {
         return try {
             val request = Request.Builder()
                 .url(photoUrl)
-                .header("Referer", "$baseUrl/CoursePortal.aspx")
+                .header("Referer", "$baseUrl/Dashboard.aspx")
                 .header("User-Agent", userAgent)
                 .build()
 
@@ -331,7 +335,7 @@ class PortalRepository {
                 val bytes = responseBody.bytes()
                 if (bytes.isEmpty()) return null
                 val htmlLike = mimeType?.contains("text/html", true) == true || looksLikeHtmlPayload(bytes)
-                if (htmlLike) {
+                if (htmlLike || !isValidImagePayload(bytes)) {
                     null
                 } else {
                     currentStudentPhotoBytes = bytes
@@ -426,6 +430,15 @@ class PortalRepository {
             probe.startsWith("<html", true) ||
             probe.contains("__VIEWSTATE", true) ||
             probe.contains("<form", true)
+    }
+
+    private fun isValidImagePayload(bytes: ByteArray): Boolean {
+        if (bytes.size < 4) return false
+        if (bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte()) return true
+        if (bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() && bytes[2] == 0x4E.toByte() && bytes[3] == 0x47.toByte()) return true
+        if (bytes[0] == 'G'.code.toByte() && bytes[1] == 'I'.code.toByte() && bytes[2] == 'F'.code.toByte()) return true
+        if (bytes[0] == 'B'.code.toByte() && bytes[1] == 'M'.code.toByte()) return true
+        return false
     }
 
     private fun encodePostBackPart(value: String): String {
@@ -1264,7 +1277,7 @@ class PortalRepository {
             val notAuthenticated = isLoginPage(finalUrl, html) || !hasSessionCookiesForHost(baseHost)
             if (notAuthenticated) {
                 Log.d("PortalAuth", "Not authenticated")
-                return Pair(emptyList(), emptyList())
+                throw PortalSystemException("Session expired")
             }
             currentStudentName = parseStudentNameFromHtml(html) ?: currentStudentName
             updateCurrentStudentPhotoUrl(parseStudentPhotoUrlFromHtml(html, finalUrl))
@@ -1612,7 +1625,10 @@ class PortalRepository {
             val html = payload.second
 
             val notAuthenticated = isLoginPage(finalUrl, html) || !hasSessionCookiesForHost(baseHost)
-            if (notAuthenticated) return emptyList()
+            if (notAuthenticated) {
+                Log.d("PortalAuth", "Not authenticated")
+                throw PortalSystemException("Session expired")
+            }
             currentStudentName = parseStudentNameFromHtml(html) ?: currentStudentName
             updateCurrentStudentPhotoUrl(parseStudentPhotoUrlFromHtml(html, finalUrl))
 
@@ -2779,58 +2795,143 @@ class PortalRepository {
                 throw PortalSystemException("Not authenticated for timetable. Please log in again.")
             }
 
-            val doc = Jsoup.parse(html)
-            val lectures = mutableListOf<TimetableLecture>()
+            val lectures = parseTimetableFromHtml(html)
+            Log.d("PortalAuth", "Fetched ${lectures.size} timetable lectures")
+            lectures
+        } catch (e: Exception) {
+            Log.e("PortalAuth", "Error fetching timetable: ${e.message}", e)
+            throw if (e !is PortalSystemException) PortalSystemException(e.message ?: "Unknown error") else e
+        }
+    }
 
-            // Find the timetable grid
-            val tables = doc.select("table.Grid, table[id*='gvTimeTable']")
-            var targetTable: org.jsoup.nodes.Element? = null
-            for (t in tables) {
-                val text = t.text()
-                if (!text.contains("Father Name", ignoreCase = true) &&
-                    !text.contains("Roll No", ignoreCase = true) &&
-                    !text.contains("Student Information", ignoreCase = true) &&
-                    !text.contains("Demographics", ignoreCase = true)
-                ) {
-                    targetTable = t
-                    break
-                }
+    private fun normalizeTime(time: String): String {
+        val trimmed = time.trim()
+        if (trimmed.isBlank()) return ""
+
+        val parts = trimmed.split(":", " ")
+        val hourRaw = parts.getOrNull(0)?.toIntOrNull() ?: return trimmed
+        val minuteRaw = parts.getOrNull(1)?.filter { it.isDigit() }?.toIntOrNull() ?: 0
+
+        val isPm = trimmed.contains("PM", ignoreCase = true) || 
+                   (!trimmed.contains("AM", ignoreCase = true) && hourRaw in 1..7)
+
+        val displayHour = String.format(Locale.US, "%02d", hourRaw)
+        val displayMinute = String.format(Locale.US, "%02d", minuteRaw)
+        val suffix = if (isPm) "PM" else "AM"
+        return "$displayHour:$displayMinute $suffix"
+    }
+
+    private fun parseTimetableFromHtml(html: String): List<TimetableLecture> {
+        val doc = Jsoup.parse(html)
+        val lectures = mutableListOf<TimetableLecture>()
+
+        val tables = doc.select("table.Grid, table[id*='gvTimeTable']")
+        var targetTable: org.jsoup.nodes.Element? = null
+        for (t in tables) {
+            val text = t.text()
+            if (!text.contains("Father Name", ignoreCase = true) &&
+                !text.contains("Roll No", ignoreCase = true) &&
+                !text.contains("Student Information", ignoreCase = true) &&
+                !text.contains("Demographics", ignoreCase = true)
+            ) {
+                targetTable = t
+                break
             }
+        }
 
-            if (targetTable == null) {
-                throw PortalSystemException("No timetable table found.")
+        if (targetTable == null && tables.isEmpty()) {
+            targetTable = doc.select("table").firstOrNull()
+        }
+
+        if (targetTable == null) {
+            throw PortalSystemException("No timetable table found.")
+        }
+
+        val rows = targetTable.select("tr")
+        if (rows.isEmpty()) return emptyList()
+
+        val timeHeaders = mutableListOf<String>()
+        val headerRow = rows.first()
+        val headerCells = headerRow?.select("th, td") ?: emptyList()
+        for (cell in headerCells) {
+            timeHeaders.add(cell.text().trim())
+        }
+
+        val firstHeader = timeHeaders.firstOrNull()?.lowercase() ?: ""
+        
+        // Detect List Layout
+        val isListLayout = timeHeaders.any {
+            it.lowercase().contains("subject") || it.lowercase().contains("course") || 
+            it.lowercase().contains("teacher") || it.lowercase().contains("instructor")
+        }
+        
+        if (isListLayout) {
+            val dayIdx = timeHeaders.indexOfFirst { it.lowercase().contains("day") }
+            val timeIdx = timeHeaders.indexOfFirst { it.lowercase().contains("time") }
+            val subjectIdx = timeHeaders.indexOfFirst { 
+                it.lowercase().contains("subject") || it.lowercase().contains("course") || it.lowercase().contains("class") 
             }
+            val roomIdx = timeHeaders.indexOfFirst { it.lowercase().contains("room") || it.lowercase().contains("class room") }
+            val teacherIdx = timeHeaders.indexOfFirst { it.lowercase().contains("teacher") || it.lowercase().contains("instructor") }
 
-            val rows = targetTable.select("tr")
-            if (rows.isEmpty()) return emptyList()
+            for (i in 1 until rows.size) {
+                val row = rows[i]
+                val cells = row.select("td, th")
+                if (cells.size < 3) continue
 
-            val timeHeaders = mutableListOf<String>()
-            val headerRow = rows.first()
-            val headerCells = headerRow?.select("th, td") ?: emptyList()
-            for (cell in headerCells) {
-                timeHeaders.add(cell.text().trim())
+                val dayVal = if (dayIdx != -1) cells.getOrNull(dayIdx)?.text()?.trim().orEmpty() else ""
+                val timeVal = if (timeIdx != -1) cells.getOrNull(timeIdx)?.text()?.trim().orEmpty() else ""
+                val subjectVal = if (subjectIdx != -1) cells.getOrNull(subjectIdx)?.text()?.trim().orEmpty() else ""
+                val roomVal = if (roomIdx != -1) cells.getOrNull(roomIdx)?.text()?.trim().orEmpty() else ""
+                val teacherVal = if (teacherIdx != -1) cells.getOrNull(teacherIdx)?.text()?.trim().orEmpty() else ""
+
+                if (subjectVal.isBlank()) continue
+
+                val times = timeVal.split("-", " to ", " - ").map { it.trim() }
+                val start = normalizeTime(times.getOrNull(0).orEmpty())
+                val end = normalizeTime(times.getOrNull(1).orEmpty())
+
+                val courseName = subjectVal.substringBeforeLast("(").trim()
+                val courseCode = subjectVal.substringAfterLast("(", "").removeSuffix(")").trim()
+
+                lectures.add(
+                    TimetableLecture(
+                        courseName = if (courseName.isBlank()) subjectVal else courseName,
+                        courseCode = courseCode,
+                        instructor = teacherVal,
+                        room = roomVal,
+                        day = dayVal,
+                        startTime = start,
+                        endTime = end,
+                        duration = "",
+                        creditHours = "",
+                        sessionType = if (subjectVal.contains("Lab", ignoreCase = true)) "Lab" else "Lecture"
+                    )
+                )
             }
+            return lectures
+        }
 
+        // Detect Days-as-Columns Matrix Layout
+        val isDaysAsColumns = firstHeader.contains("time")
+        if (isDaysAsColumns) {
             for (i in 1 until rows.size) {
                 val row = rows[i]
                 val cells = row.select("td, th")
                 if (cells.isEmpty()) continue
 
-                val day = cells.first()?.text()?.trim() ?: continue
-                if (day.isBlank() || day.lowercase() == "day") continue
+                val timeRange = cells.first()?.text()?.trim() ?: continue
+                if (timeRange.isBlank() || timeRange.lowercase() == "time") continue
 
-                var slotIndex = 1
-                var cellIndex = 1
+                val startTimeStr = normalizeTime(extractStartTime(timeRange))
+                val endTimeStr = normalizeTime(extractEndTime(timeRange))
 
-                while (cellIndex < cells.size && slotIndex < timeHeaders.size) {
-                    val cell = cells[cellIndex]
-                    val colspan = cell.attr("colspan").toIntOrNull() ?: 1
+                for (colIdx in 1 until cells.size) {
+                    val cell = cells[colIdx]
                     val cellText = cell.text().trim()
+                    val dayName = timeHeaders.getOrNull(colIdx) ?: continue
 
                     if (cellText.isNotBlank() && cellText != "*" && cellText != "—" && cellText != "-" && !cellText.matches(Regex("^-+$")) && !cellText.contains("Lunch", ignoreCase = true)) {
-                        val startTimeStr = extractStartTime(timeHeaders.getOrNull(slotIndex))
-                        val endTimeStr = extractEndTime(timeHeaders.getOrNull(slotIndex + colspan - 1))
-
                         val (courseName, room, instructor, sessionType) = extractTimetableLectureData(cell)
 
                         lectures.add(
@@ -2839,7 +2940,7 @@ class PortalRepository {
                                 courseCode = "",
                                 instructor = instructor,
                                 room = room,
-                                day = day,
+                                day = dayName,
                                 startTime = startTimeStr,
                                 endTime = endTimeStr,
                                 duration = "",
@@ -2848,17 +2949,54 @@ class PortalRepository {
                             )
                         )
                     }
-                    slotIndex += colspan
-                    cellIndex++
                 }
             }
-
-            Log.d("PortalAuth", "Fetched ${lectures.size} timetable lectures")
-            lectures
-        } catch (e: Exception) {
-            Log.e("PortalAuth", "Error fetching timetable: ${e.message}", e)
-            throw if (e !is PortalSystemException) PortalSystemException(e.message ?: "Unknown error") else e
+            return lectures
         }
+
+        // Layout A: Days as Rows (Default)
+        for (i in 1 until rows.size) {
+            val row = rows[i]
+            val cells = row.select("td, th")
+            if (cells.isEmpty()) continue
+
+            val day = cells.first()?.text()?.trim() ?: continue
+            if (day.isBlank() || day.lowercase() == "day") continue
+
+            var slotIndex = 1
+            var cellIndex = 1
+
+            while (cellIndex < cells.size && slotIndex < timeHeaders.size) {
+                val cell = cells[cellIndex]
+                val colspan = cell.attr("colspan").toIntOrNull() ?: 1
+                val cellText = cell.text().trim()
+
+                if (cellText.isNotBlank() && cellText != "*" && cellText != "—" && cellText != "-" && !cellText.matches(Regex("^-+$")) && !cellText.contains("Lunch", ignoreCase = true)) {
+                    val startTimeStr = normalizeTime(extractStartTime(timeHeaders.getOrNull(slotIndex)))
+                    val endTimeStr = normalizeTime(extractEndTime(timeHeaders.getOrNull(slotIndex + colspan - 1)))
+
+                    val (courseName, room, instructor, sessionType) = extractTimetableLectureData(cell)
+
+                    lectures.add(
+                        TimetableLecture(
+                            courseName = courseName,
+                            courseCode = "",
+                            instructor = instructor,
+                            room = room,
+                            day = day,
+                            startTime = startTimeStr,
+                            endTime = endTimeStr,
+                            duration = "",
+                            creditHours = "",
+                            sessionType = sessionType
+                        )
+                    )
+                }
+                slotIndex += colspan
+                cellIndex++
+            }
+        }
+        return lectures
     }
 
     private fun extractStartTime(timeRange: String?): String {
@@ -2901,43 +3039,75 @@ class PortalRepository {
         var room = "Unknown"
         var instructor = "Unknown"
         
-        if (htmlParts.size >= 3) {
-            courseName = htmlParts[0]
-            var roomPart = htmlParts[1]
-            // Find instructor: scan remaining parts for the first one that looks like a name
-            instructor = "Unknown"
-            for (i in 2 until htmlParts.size) {
-                val candidate = htmlParts[i]
-                    .replace(Regex("\\[.*?\\]"), "")   // strip [50M] etc
-                    .replace(Regex("\\(.*?\\)"), "")   // strip (56M) etc
-                    .replace(Regex("\\b\\d+\\b"), "")  // strip standalone numbers
-                    .trim()
-                // A valid instructor name must have at least 2 letters and not be empty
-                if (candidate.length >= 2 && candidate.any { it.isLetter() }) {
-                    instructor = candidate
-                    break
-                }
+        if (htmlParts.size >= 2) {
+            val roomIndex = htmlParts.indexOfFirst { 
+                it.lowercase().contains("room") || 
+                it.matches(Regex(".*\\[[^\\]]+\\].*")) || 
+                it.matches(Regex(".*\\b(A|B|C|D|S|L|Lab|Auditorium|Hall|CR|Lab)-\\d+.*", RegexOption.IGNORE_CASE))
             }
             
-            // Strip brackets [50M]
-            roomPart = roomPart.replace(Regex("\\[[^\\]]+\\]"), "").trim()
-            
-            // Check parentheses to separate room code from capacity
-            val parensMatch = Regex("\\(([^)]+)\\)").find(roomPart)
-            if (parensMatch != null) {
-                val inside = parensMatch.groupValues[1].trim()
-                if (inside.matches(Regex("\\d+M?", RegexOption.IGNORE_CASE))) {
-                    // It's a capacity like (56M) or (45). Room name is outside.
-                    room = roomPart.replace(parensMatch.value, "").trim()
+            if (roomIndex != -1) {
+                courseName = htmlParts.subList(0, roomIndex).joinToString(" ")
+                
+                val roomPart = htmlParts[roomIndex]
+                room = roomPart.replace(Regex("(?i)\\broom\\b"), "").trim()
+                room = room.replace(Regex("\\[[^\\]]+\\]"), "").trim()
+                val parensMatch = Regex("\\(([^)]+)\\)").find(room)
+                if (parensMatch != null) {
+                    val inside = parensMatch.groupValues[1].trim()
+                    if (inside.matches(Regex("\\d+M?", RegexOption.IGNORE_CASE))) {
+                        room = room.replace(parensMatch.value, "").trim()
+                    } else {
+                        room = inside
+                    }
                 } else {
-                    // It's a room code like (S-312). Room name is inside.
-                    room = inside
+                    room = roomPart
+                }
+                
+                for (i in (roomIndex + 1) until htmlParts.size) {
+                    val candidate = htmlParts[i]
+                        .replace(Regex("\\[.*?\\]"), "")
+                        .replace(Regex("\\(.*?\\)"), "")
+                        .replace(Regex("\\b\\d+\\b"), "")
+                        .trim()
+                    if (candidate.length >= 2 && candidate.any { it.isLetter() }) {
+                        instructor = candidate
+                        break
+                    }
                 }
             } else {
-                room = roomPart // If no parens, the whole part is the room
+                courseName = htmlParts[0]
+                if (htmlParts.size >= 3) {
+                    var roomPart = htmlParts[1]
+                    instructor = "Unknown"
+                    for (i in 2 until htmlParts.size) {
+                        val candidate = htmlParts[i]
+                            .replace(Regex("\\[.*?\\]"), "")
+                            .replace(Regex("\\(.*?\\)"), "")
+                            .replace(Regex("\\b\\d+\\b"), "")
+                            .trim()
+                        if (candidate.length >= 2 && candidate.any { it.isLetter() }) {
+                            instructor = candidate
+                            break
+                        }
+                    }
+                    roomPart = roomPart.replace(Regex("\\[[^\\]]+\\]"), "").trim()
+                    val parensMatch = Regex("\\(([^)]+)\\)").find(roomPart)
+                    if (parensMatch != null) {
+                        val inside = parensMatch.groupValues[1].trim()
+                        if (inside.matches(Regex("\\d+M?", RegexOption.IGNORE_CASE))) {
+                            room = roomPart.replace(parensMatch.value, "").trim()
+                        } else {
+                            room = inside
+                        }
+                    } else {
+                        room = roomPart
+                    }
+                } else {
+                    room = htmlParts.getOrNull(1) ?: "Unknown"
+                }
             }
         } else {
-            // Fallback for single-line text
             val text = cellText.replace(Regex("(?:\\s+\\d+)+$"), "").trim()
             val formatB = Regex("^(.*?)\\s*\\(([^)]+)\\)\\s*\\[[^\\]]+\\]\\s*(.*)$")
             val matchB = formatB.find(text)
@@ -2967,5 +3137,1882 @@ class PortalRepository {
             .trim()
             
         return ParsedLecture(cleanCourseName, room, instructor, sessionType)
+    }
+
+    private fun populateCourseCodesMap() {
+        if (courseTitleToCreditMap.isNotEmpty()) return
+        try {
+            val resultCardUrl = "$baseUrl/StudentResultCard.aspx"
+            val getRequest = Request.Builder()
+                .url(resultCardUrl)
+                .header("User-Agent", userAgent)
+                .build()
+            val resultHtml = client.newCall(getRequest).execute().use { response ->
+                if (response.isSuccessful) response.body?.string() else null
+            }
+            if (!resultHtml.isNullOrBlank()) {
+                val doc = org.jsoup.Jsoup.parse(resultHtml)
+                val semesterRegex = Regex("(Spring|Fall|Summer)\\s*\\d{4}", RegexOption.IGNORE_CASE)
+                val semestersFound = mutableListOf<String>()
+                
+                for (table in doc.select("table")) {
+                    val tableText = table.text()
+                    val match = semesterRegex.find(tableText)
+                    if (match != null && (tableText.contains("Result Semester", ignoreCase = true) || tableText.contains("Semester Result", ignoreCase = true))) {
+                        semestersFound.add(match.value)
+                    }
+                    for (row in table.select("tr")) {
+                        val cells = row.select("td")
+                        if (cells.size >= 2) {
+                            val codeVal = cells[0].text().trim()
+                            val nameVal = cells[1].text().trim()
+                            if (codeVal.matches("^[A-Z]{2,4}\\s*-?\\d{2,4}$".toRegex()) && nameVal.isNotEmpty()) {
+                                val cleanTitle = nameVal.lowercase().replace("\\s+|-|•|–".toRegex(), "")
+                                courseTitleToCodeMap[cleanTitle] = codeVal
+                                
+                                val creditVal = cells.getOrNull(2)?.text()?.trim().orEmpty()
+                                if (creditVal.isNotEmpty()) {
+                                    courseTitleToCreditMap[cleanTitle] = creditVal
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                if (semestersFound.isNotEmpty()) {
+                    latestSemesterName = semestersFound.maxWithOrNull { s1, s2 ->
+                        val y1 = s1.split(" ").lastOrNull()?.toIntOrNull() ?: 0
+                        val y2 = s2.split(" ").lastOrNull()?.toIntOrNull() ?: 0
+                        if (y1 != y2) {
+                            y1.compareTo(y2)
+                        } else {
+                            val t1 = s1.split(" ").firstOrNull()?.lowercase() ?: ""
+                            val t2 = s2.split(" ").firstOrNull()?.lowercase() ?: ""
+                            val order = listOf("spring", "summer", "fall")
+                            val o1 = order.indexOf(t1)
+                            val o2 = order.indexOf(t2)
+                            o1.compareTo(o2)
+                        }
+                    } ?: ""
+                    Log.d("PortalAuth", "Determined latest semester from ResultCard: $latestSemesterName")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("PortalAuth", "Error fetching/parsing StudentResultCard.aspx for course code resolution: ${e.message}", e)
+        }
+    }
+
+    fun fetchAttendanceSummary(resolvedCodes: Map<String, String>? = null): List<AttendanceSummary> {
+        if (resolvedCodes != null) {
+            courseTitleToCodeMap.putAll(resolvedCodes)
+        }
+        if (courseTitleToCodeMap.isEmpty()) {
+            populateCourseCodesMap()
+        }
+        return try {
+            val summaryUrl = "$baseUrl/Summary.aspx"
+            val request = Request.Builder()
+                .url(summaryUrl)
+                .header("Referer", "$baseUrl/CoursePortal.aspx")
+                .header("User-Agent", userAgent)
+                .build()
+            val payload = client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw PortalSystemException("fetchAttendanceSummary HTTP ${response.code}")
+                }
+                val body = response.body?.string() ?: throw PortalSystemException("fetchAttendanceSummary empty response")
+                response.request.url.toString() to body
+            }
+            val finalUrl = payload.first
+            val html = payload.second
+            detectPortalSystemErrors(html)
+            if (isLoginPage(finalUrl, html) || !hasSessionCookiesForHost(baseHost)) {
+                throw PortalSystemException("Session expired")
+            }
+            
+            val doc = Jsoup.parse(html)
+            val list = mutableListOf<AttendanceSummary>()
+            
+            for (table in doc.select("table")) {
+                val tt = table.text().lowercase()
+                if (tt.contains("father name") && tt.contains("roll no")) continue
+                if (tt.contains("cnic") && tt.contains("date of birth")) continue
+                val rows = table.select("tr")
+                if (rows.size < 2) continue
+
+                var hdr: org.jsoup.nodes.Element? = null
+                var hdrIdx = -1
+                for (i in 0 until rows.size) {
+                    if (rows[i].select("th, td").size > 1) {
+                        hdr = rows[i]
+                        hdrIdx = i
+                        break
+                    }
+                }
+                if (hdr == null) continue
+
+                val ths = hdr.select("th, td")
+                val headers = ths.map { it.text().trim().lowercase() }
+
+                var codeIdx = -1
+                var titleIdx = -1
+                var classIdx = -1
+                var facIdx = -1
+                var totIdx = -1
+                var presIdx = -1
+                var absIdx = -1
+                var thyIdx = -1
+                var labIdx = -1
+                var pctIdx = -1
+
+                for (i in headers.indices) {
+                    val h = headers[i]
+                    if (h.contains("code")) codeIdx = i
+                    else if (h.contains("title") || h.contains("subject")) titleIdx = i
+                    else if (h == "class") classIdx = i
+                    else if (h.contains("faculty") || h.contains("teacher") || h.contains("member")) facIdx = i
+                    else if (h.contains("lectures") || h.contains("total")) totIdx = i
+                    else if (h == "p" || h.contains("present")) presIdx = i
+                    else if (h == "a" || h.contains("absent")) absIdx = i
+                    else if (h.contains("thy%") || h == "thy") thyIdx = i
+                    else if (h.contains("lab%") || h == "lab") labIdx = i
+                    else if (h.contains("percentage") || h.contains("%")) pctIdx = i
+                }
+
+                if (codeIdx == -1 && titleIdx == -1) {
+                    titleIdx = 1; classIdx = 2; facIdx = 3; totIdx = 4; presIdx = 5; absIdx = 6; thyIdx = 7; labIdx = 8
+                }
+
+                for (r in (hdrIdx + 1) until rows.size) {
+                    val cells = rows[r].select("td")
+                    if (cells.size <= Math.max(codeIdx, titleIdx)) continue
+
+                    var code = if (codeIdx >= 0 && codeIdx < cells.size) cells[codeIdx].text().trim() else ""
+                    var title = if (titleIdx >= 0 && titleIdx < cells.size) cells[titleIdx].text().trim() else ""
+                    val totalClassesStr = if (totIdx >= 0 && totIdx < cells.size) cells[totIdx].text().trim() else "0"
+                    val presentsStr = if (presIdx >= 0 && presIdx < cells.size) cells[presIdx].text().trim() else "0"
+                    val absentsStr = if (absIdx >= 0 && absIdx < cells.size) cells[absIdx].text().trim() else "0"
+                    
+                    val thyPercentageStr = if (thyIdx >= 0 && thyIdx < cells.size) cells[thyIdx].text().trim() else "N/A"
+                    val labPercentageStr = if (labIdx >= 0 && labIdx < cells.size) cells[labIdx].text().trim() else "N/A"
+                    val hasTheory = thyPercentageStr != "N/A" && thyPercentageStr.isNotBlank()
+                    val hasLab = labPercentageStr != "N/A" && labPercentageStr.isNotBlank()
+                    
+                    var percentageVal = 0.0
+                    if (hasTheory && hasLab) {
+                        val thyVal = thyPercentageStr.replace("%", "").trim().toDoubleOrNull() ?: 0.0
+                        val labVal = labPercentageStr.replace("%", "").trim().toDoubleOrNull() ?: 0.0
+                        percentageVal = (thyVal + labVal) / 2.0
+                    } else if (pctIdx >= 0 && pctIdx < cells.size) {
+                        percentageVal = cells[pctIdx].text().replace("%", "").trim().toDoubleOrNull() ?: 0.0
+                    } else if (hasTheory) {
+                        percentageVal = thyPercentageStr.replace("%", "").trim().toDoubleOrNull() ?: 0.0
+                    } else if (hasLab) {
+                        percentageVal = labPercentageStr.replace("%", "").trim().toDoubleOrNull() ?: 0.0
+                    }
+
+                    if (code.isEmpty() && title.isNotEmpty() && title.contains("\n")) {
+                        val parts = title.split("\n")
+                        code = parts[0].trim()
+                        title = parts[1].trim()
+                    } else if (code.isEmpty() && title.isNotEmpty()) {
+                        val m = java.util.regex.Pattern.compile("^([A-Za-z]{2,4}-?\\d{3})[\\s\\-•]*(.*)$").matcher(title)
+                        if (m.find()) {
+                            code = m.group(1)?.trim() ?: ""
+                            title = m.group(2)?.trim() ?: ""
+                        }
+                    }
+
+                    if (code.isEmpty() && title.isNotEmpty()) {
+                        val cleanTitle = title.lowercase().replace("\\s+|-|•|–".toRegex(), "")
+                        for ((mapTitle, mapCode) in courseTitleToCodeMap) {
+                            if (mapTitle.contains(cleanTitle) || cleanTitle.contains(mapTitle)) {
+                                code = mapCode
+                                Log.d("PortalAuth", "Resolved empty attendance code for '$title' to '$code'")
+                                break
+                            }
+                        }
+                    }
+
+                    if (title.isEmpty() && code.isEmpty()) continue
+
+                    var postbackTarget = ""
+                    var aTag = if (titleIdx >= 0 && titleIdx < cells.size) cells[titleIdx].select("a").firstOrNull() else null
+                    if (aTag == null && codeIdx >= 0 && codeIdx < cells.size) aTag = cells[codeIdx].select("a").firstOrNull()
+                    if (aTag != null) {
+                        val href = aTag.attr("href")
+                        if (href.contains("__doPostBack")) {
+                            val start = href.indexOf("'") + 1
+                            val end = href.indexOf("'", start)
+                            if (start > 0 && end > start) {
+                                postbackTarget = href.substring(start, end)
+                            }
+                        }
+                    }
+
+                    val cleanCode = code.trim().uppercase()
+                    val cleanTitle = title.trim().uppercase()
+                    if (cleanCode.isNotEmpty() && postbackTarget.isNotEmpty()) {
+                        coursePostbackTargets[cleanCode] = postbackTarget
+                    }
+                    if (cleanTitle.isNotEmpty() && postbackTarget.isNotEmpty()) {
+                        coursePostbackTargets[cleanTitle] = postbackTarget
+                    }
+
+                    val totalLectures = totalClassesStr.toIntOrNull() ?: 0
+                    val presents = presentsStr.toIntOrNull() ?: 0
+                    val absents = absentsStr.toIntOrNull() ?: 0
+
+                    list.add(
+                        AttendanceSummary(
+                            courseCode = code,
+                            courseName = title,
+                            totalLectures = totalLectures,
+                            present = presents,
+                            absent = absents,
+                            leaves = 0,
+                            percentage = percentageVal
+                        )
+                    )
+                }
+            }
+            list.distinctBy { "${it.courseCode.trim().uppercase()}_${it.courseName.trim().uppercase()}" }
+        } catch (e: Exception) {
+            Log.e("PortalAuth", "Error fetching attendance summary: ${e.message}", e)
+            throw if (e !is PortalSystemException) PortalSystemException(e.message ?: "Unknown error") else e
+        }
+    }
+
+    fun fetchAttendanceDetail(courseCode: String): List<AttendanceDetail> {
+        val cleanCode = courseCode.trim().uppercase()
+        var postbackTarget = coursePostbackTargets[cleanCode]
+        
+        if (postbackTarget.isNullOrEmpty()) {
+            fetchAttendanceSummary()
+            postbackTarget = coursePostbackTargets[cleanCode]
+        }
+        
+        if (postbackTarget.isNullOrEmpty()) {
+            Log.d("PortalAuth", "No postback target found for course $courseCode")
+            return emptyList()
+        }
+        
+        return try {
+            val summaryUrl = "$baseUrl/Summary.aspx"
+            val procPageUrl = "$baseUrl/classproceedings.aspx"
+            
+            val getRequest = Request.Builder()
+                .url(summaryUrl)
+                .header("Referer", "$baseUrl/CoursePortal.aspx")
+                .header("User-Agent", userAgent)
+                .build()
+            val payload = client.newCall(getRequest).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw PortalSystemException("fetchAttendanceDetail GET Summary.aspx failed HTTP ${response.code}")
+                }
+                val body = response.body?.string() ?: throw PortalSystemException("fetchAttendanceDetail empty response")
+                response.request.url.toString() to body
+            }
+            val finalUrl = payload.first
+            val summaryHtml = payload.second
+            detectPortalSystemErrors(summaryHtml)
+            if (isLoginPage(finalUrl, summaryHtml) || !hasSessionCookiesForHost(baseHost)) {
+                throw PortalSystemException("Session expired")
+            }
+            
+            val postBackInfo = PostBackInfo(postbackTarget, "")
+            val postRequest = buildPostBackRequestFromPage(summaryUrl, summaryHtml, postBackInfo)
+                ?: throw PortalSystemException("Failed to construct postback request for course $courseCode")
+                
+            client.newCall(postRequest).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw PortalSystemException("fetchAttendanceDetail postback failed HTTP ${response.code}")
+                }
+                response.body?.string()
+            }
+            
+            val procRequest = Request.Builder()
+                .url(procPageUrl)
+                .header("Referer", summaryUrl)
+                .header("User-Agent", userAgent)
+                .build()
+            val procHtml = client.newCall(procRequest).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw PortalSystemException("fetchAttendanceDetail GET classproceedings.aspx failed HTTP ${response.code}")
+                }
+                response.body?.string() ?: throw PortalSystemException("fetchAttendanceDetail classproceedings empty response")
+            }
+            detectPortalSystemErrors(procHtml)
+            
+            val doc = Jsoup.parse(procHtml)
+            val details = mutableListOf<AttendanceDetail>()
+            
+            for (table in doc.select("table")) {
+                val rows = table.select("tr")
+                if (rows.size < 2) continue
+                val hdr = rows.firstOrNull() ?: continue
+                val hdrText = hdr.text().lowercase()
+                if (hdrText.contains("lecture") || hdrText.contains("date") || hdrText.contains("topic") || hdrText.contains("status")) {
+                    val ths = hdr.select("th, td")
+                    val headers = ths.map { it.text().trim().lowercase() }
+                    
+                    var dateIdx = -1
+                    var topicIdx = -1
+                    var statusIdx = -1
+                    
+                    for (i in headers.indices) {
+                        val h = headers[i]
+                        if (h.contains("date")) dateIdx = i
+                        else if (h.contains("topic") || h.contains("particular") || h.contains("description")) topicIdx = i
+                        else if (h.contains("status")) statusIdx = i
+                    }
+                    
+                    for (r in 1 until rows.size) {
+                        val cells = rows[r].select("td")
+                        if (cells.size <= Math.max(dateIdx, statusIdx)) continue
+                        
+                        val date = if (dateIdx >= 0 && dateIdx < cells.size) cells[dateIdx].text().trim() else ""
+                        val topic = if (topicIdx >= 0 && topicIdx < cells.size) cells[topicIdx].text().trim() else "No Topic Specified"
+                        val status = if (statusIdx >= 0 && statusIdx < cells.size) cells[statusIdx].text().trim() else ""
+                        
+                        if (date.isNotEmpty()) {
+                            details.add(
+                                AttendanceDetail(
+                                    date = date,
+                                    status = status,
+                                    remarks = topic,
+                                    courseCode = courseCode
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+            
+            details
+        } catch (e: Exception) {
+            Log.e("PortalAuth", "Error fetching attendance detail: ${e.message}", e)
+            throw if (e !is PortalSystemException) PortalSystemException(e.message ?: "Unknown error") else e
+        }
+    }
+
+    fun fetchGrades(): GpaSummary {
+        return try {
+            val url = "$baseUrl/StudentResultCard.aspx"
+            val request = Request.Builder()
+                .url(url)
+                .header("Referer", "$baseUrl/Dashboard.aspx")
+                .header("User-Agent", userAgent)
+                .build()
+            val payload = client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw PortalSystemException("fetchGrades HTTP ${response.code}")
+                }
+                val body = response.body?.string() ?: throw PortalSystemException("fetchGrades empty response")
+                response.request.url.toString() to body
+            }
+            val finalUrl = payload.first
+            val html = payload.second
+            detectPortalSystemErrors(html)
+            if (isLoginPage(finalUrl, html) || !hasSessionCookiesForHost(baseHost)) {
+                throw PortalSystemException("Session expired")
+            }
+            
+            val doc = Jsoup.parse(html)
+            val resultTables = mutableListOf<SemesterGrades>()
+            val allTables = doc.select("table")
+
+            for (i in 0 until allTables.size) {
+                val table = allTables[i]
+                val rows = table.select("tr")
+                if (rows.size < 2) continue
+
+                var titleText = "Semester Result"
+                var headerRowIndex = -1
+
+                for (j in 0 until rows.size) {
+                    val cells = rows[j].select("th, td")
+                    if (cells.size > 3) {
+                        headerRowIndex = j
+                        break
+                    } else if (cells.size == 1) {
+                        val possibleTitle = cells.firstOrNull()?.text()?.trim() ?: ""
+                        if (possibleTitle.isNotEmpty()) {
+                            titleText = possibleTitle
+                        }
+                    }
+                }
+
+                if (headerRowIndex == -1) continue
+
+                if (titleText == "Semester Result") {
+                    var prev = table.previousElementSibling()
+                    while (prev != null) {
+                        val txt = prev.text().trim()
+                        if (txt.isNotEmpty()) {
+                            titleText = txt
+                            break
+                        }
+                        prev = prev.previousElementSibling()
+                    }
+                }
+
+                val headerCells = rows[headerRowIndex].select("th, td")
+                val headers = headerCells.map { it.text().trim().lowercase() }
+
+                var isTranscript = false
+                for (header in headers) {
+                    if (header.contains("course") || header.contains("credit") || header.contains("marks") || header.contains("grade") || header == "lg") {
+                        isTranscript = true
+                        break
+                    }
+                }
+                if (!isTranscript) continue
+
+                val courses = mutableListOf<CourseGrade>()
+                
+                var codeIdx = -1
+                var titleIdx = -1
+                var creditIdx = -1
+                var marksIdx = -1
+                var gradeIdx = -1
+                var gpIdx = -1
+
+                for (idx in headers.indices) {
+                    val h = headers[idx]
+                    if (h.contains("code")) codeIdx = idx
+                    else if (h.contains("title") || h.contains("course")) titleIdx = idx
+                    else if (h.contains("credit") || h.contains("cr.")) creditIdx = idx
+                    else if (h.contains("marks") || h.contains("obt") || h == "marks" || h == "mks") marksIdx = idx
+                    else if (h.contains("grade") || h == "lg") gradeIdx = idx
+                    else if (h.contains("points") || h == "gp") gpIdx = idx
+                }
+                
+                if (codeIdx == -1) {
+                    codeIdx = 0
+                }
+                if (titleIdx == -1) {
+                    titleIdx = if (headers.size >= 6) 1 else 0
+                }
+                if (creditIdx == -1) {
+                    creditIdx = if (headers.size >= 6) 2 else 1
+                }
+                if (marksIdx == -1) {
+                    marksIdx = if (headers.size >= 6) 3 else -1
+                }
+                if (gradeIdx == -1) {
+                    gradeIdx = if (headers.size >= 6) 4 else 2
+                }
+                if (gpIdx == -1) {
+                    gpIdx = if (headers.size >= 6) 5 else 3
+                }
+
+                for (r in (headerRowIndex + 1) until rows.size) {
+                    val cells = rows[r].select("td, th")
+                    val maxIdx = maxOf(codeIdx, titleIdx, creditIdx, gradeIdx, gpIdx, marksIdx)
+                    if (cells.size <= maxIdx) continue
+                    
+                    val rowText = cells.joinToString(" ") { it.text().trim() }.uppercase()
+                    if (rowText.contains("SGPA") || rowText.contains("CGPA") || rowText.contains("GPA") || rowText.contains("CREDIT HOURS")) {
+                        continue
+                    }
+
+                    val code = cells[codeIdx].text().trim()
+                    val courseTitle = cells[titleIdx].text().trim()
+                    val creditStr = if (creditIdx >= 0) cells[creditIdx].text().trim() else "3"
+                    
+                    val rawGrade = if (gradeIdx >= 0) cells[gradeIdx].text().trim() else ""
+                    val grade = if (rawGrade.lowercase().contains("non credit") || 
+                                    rawGrade.lowercase().contains("non-credit") || 
+                                    rawGrade.lowercase().contains("noncredit") ||
+                                    rawGrade.lowercase().contains("ncr")) "NC" else rawGrade
+                                    
+                    val gpStr = if (gpIdx >= 0) cells[gpIdx].text().trim() else "0"
+                    
+                    val rawMarks = if (marksIdx >= 0) cells[marksIdx].text().trim() else null
+                    val marksStr = if (rawMarks != null) {
+                        if (rawMarks.lowercase().contains("non credit") || 
+                            rawMarks.lowercase().contains("non-credit") || 
+                            rawMarks.lowercase().contains("noncredit") ||
+                            rawMarks.lowercase().contains("ncr")) "NC" else rawMarks
+                    } else null
+
+                    val credit = creditStr.toDoubleOrNull() ?: 0.0
+                    val gp = gpStr.toDoubleOrNull() ?: 0.0
+
+                    if (code.isNotEmpty() && courseTitle.isNotEmpty()) {
+                        courses.add(
+                            CourseGrade(
+                                courseCode = code,
+                                courseName = courseTitle,
+                                creditHours = credit,
+                                grade = grade,
+                                gradePoints = gp,
+                                marks = marksStr
+                            )
+                        )
+                    }
+                }
+
+                if (courses.isNotEmpty()) {
+                    var sgpa = -1.0
+                    var cgpa = -1.0
+                    val semesterCredits = courses.filter {
+                        val g = it.grade.uppercase().trim()
+                        g != "NC" && g != "NCR" && !g.contains("NON CREDIT") && !g.contains("NON-CREDIT")
+                    }.sumOf { it.creditHours }
+
+                    // Strategy 1: Fallback checks for explicit ID patterns in rows or table siblings (parent's children)
+                    val parent = table.parent()
+                    if (parent != null) {
+                        val sSpan = parent.selectFirst("[id*=lblSGPA], [id*=sgpa]")
+                        if (sSpan != null) {
+                            sgpa = sSpan.text().trim().toDoubleOrNull() ?: -1.0
+                        }
+                        val cSpan = parent.selectFirst("[id*=lblCGPA], [id*=cgpa]")
+                        if (cSpan != null) {
+                            cgpa = cSpan.text().trim().toDoubleOrNull() ?: -1.0
+                        }
+                    }
+
+                    // Strategy 2: Simple regex to find SGPA and CGPA numbers in the row
+                    for (row in rows) {
+                        val rowText = row.text().uppercase()
+                        if (sgpa == -1.0 || cgpa == -1.0) {
+                            if (rowText.contains("SGPA") || rowText.contains("CGPA")) {
+                                val mSgpa = java.util.regex.Pattern.compile("SGPA\\s*(?::|\\-|=)?\\s*([0-9]+\\.[0-9]+)").matcher(rowText)
+                                if (mSgpa.find() && sgpa == -1.0) {
+                                    sgpa = mSgpa.group(1)?.toDoubleOrNull() ?: -1.0
+                                }
+                                val mCgpa = java.util.regex.Pattern.compile("CGPA\\s*(?::|\\-|=)?\\s*([0-9]+\\.[0-9]+)").matcher(rowText)
+                                if (mCgpa.find() && cgpa == -1.0) {
+                                    cgpa = mCgpa.group(1)?.toDoubleOrNull() ?: -1.0
+                                }
+                            }
+                        }
+                    }
+
+                    if (cgpa == -1.0 && i + 1 < allTables.size) {
+                        val nextTable = allTables[i + 1]
+                        val nextTableText = nextTable.text().uppercase()
+                        if (nextTableText.contains("CGPA")) {
+                            val mCgpa = java.util.regex.Pattern.compile("CGPA\\s*(?::|\\-|=)?\\s*([0-9]+\\.[0-9]+)").matcher(nextTableText)
+                            if (mCgpa.find() && cgpa == -1.0) {
+                                cgpa = mCgpa.group(1)?.toDoubleOrNull() ?: -1.0
+                            }
+                            val mSgpa = java.util.regex.Pattern.compile("SGPA\\s*(?::|\\-|=)?\\s*([0-9]+\\.[0-9]+)").matcher(nextTableText)
+                            if (mSgpa.find() && sgpa == -1.0) {
+                                sgpa = mSgpa.group(1)?.toDoubleOrNull() ?: -1.0
+                            }
+                        }
+                    }
+
+                    if (sgpa == -1.0) {
+                        val creditedCourses = courses.filter { 
+                            val g = it.grade.uppercase().trim()
+                            g != "NC" && g != "NCR" && !g.contains("NON CREDIT") && !g.contains("NON-CREDIT")
+                        }
+                        val totalQualityPoints = creditedCourses.sumOf { it.creditHours * it.gradePoints }
+                        val totalCredits = creditedCourses.sumOf { it.creditHours }
+                        sgpa = if (totalCredits > 0) totalQualityPoints / totalCredits else 0.0
+                    }
+                    if (cgpa == -1.0) {
+                        cgpa = sgpa
+                    }
+
+                    resultTables.add(
+                        SemesterGrades(
+                            semesterName = titleText,
+                            sgpa = sgpa,
+                            cgpa = cgpa,
+                            creditHours = semesterCredits,
+                            courses = courses
+                        )
+                    )
+                }
+            }
+
+            val overallCgpa = getOverallCgpa(resultTables)
+            val overallCreditHours = calculateTotalEarnedCredits(resultTables)
+
+            val docText = doc.text()
+            val standingPatterns = listOf(
+                java.util.regex.Pattern.compile("(?i)Academic\\s*Standing\\s*(?::|-|=)?\\s*([a-zA-Z\\s]{3,30})"),
+                java.util.regex.Pattern.compile("(?i)Standing\\s*(?::|-|=)?\\s*([a-zA-Z\\s]{3,30})")
+            )
+            var parsedStanding: String? = null
+            for (pattern in standingPatterns) {
+                val matcher = pattern.matcher(docText)
+                if (matcher.find()) {
+                    parsedStanding = matcher.group(1)?.trim()
+                    break
+                }
+            }
+
+            GpaSummary(
+                cgpa = overallCgpa,
+                totalCreditHours = overallCreditHours,
+                semesters = resultTables,
+                academicStanding = parsedStanding
+            )
+        } catch (e: Exception) {
+            Log.e("PortalAuth", "Error fetching grades: ${e.message}", e)
+            throw if (e !is PortalSystemException) PortalSystemException(e.message ?: "Unknown error") else e
+        }
+    }
+
+    fun fetchMarks(courseCode: String): List<MarksCategory> {
+        val cleanCode = courseCode.trim().uppercase()
+        var postbackTarget = coursePostbackTargets[cleanCode]
+        
+        if (postbackTarget.isNullOrEmpty()) {
+            fetchAttendanceSummary()
+            postbackTarget = coursePostbackTargets[cleanCode]
+        }
+        
+        if (postbackTarget.isNullOrEmpty()) {
+            Log.d("PortalAuth", "No postback target found for course $courseCode")
+            return emptyList()
+        }
+        
+        return try {
+            val summaryUrl = "$baseUrl/Summary.aspx"
+            val marksPageUrl = "$baseUrl/QAMarks.aspx"
+            
+            val getRequest = Request.Builder()
+                .url(summaryUrl)
+                .header("Referer", "$baseUrl/CoursePortal.aspx")
+                .header("User-Agent", userAgent)
+                .build()
+            val payload = client.newCall(getRequest).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw PortalSystemException("fetchMarks GET Summary.aspx failed HTTP ${response.code}")
+                }
+                val body = response.body?.string() ?: throw PortalSystemException("fetchMarks empty response")
+                response.request.url.toString() to body
+            }
+            val finalUrl = payload.first
+            val summaryHtml = payload.second
+            detectPortalSystemErrors(summaryHtml)
+            if (isLoginPage(finalUrl, summaryHtml) || !hasSessionCookiesForHost(baseHost)) {
+                throw PortalSystemException("Session expired")
+            }
+            
+            val postBackInfo = PostBackInfo(postbackTarget, "")
+            val postRequest = buildPostBackRequestFromPage(summaryUrl, summaryHtml, postBackInfo)
+                ?: throw PortalSystemException("Failed to construct postback request for course $courseCode")
+                
+            client.newCall(postRequest).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw PortalSystemException("fetchMarks postback failed HTTP ${response.code}")
+                }
+                response.body?.string()
+            }
+            
+            val marksRequest = Request.Builder()
+                .url(marksPageUrl)
+                .header("Referer", summaryUrl)
+                .header("User-Agent", userAgent)
+                .build()
+            val marksHtml = client.newCall(marksRequest).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw PortalSystemException("fetchMarks GET QAMarks.aspx failed HTTP ${response.code}")
+                }
+                response.body?.string() ?: throw PortalSystemException("fetchMarks QAMarks empty response")
+            }
+            detectPortalSystemErrors(marksHtml)
+            
+            val doc = Jsoup.parse(marksHtml)
+            val categories = mutableListOf<MarksCategory>()
+            
+            for (table in doc.select("table")) {
+                val rows = table.select("tr")
+                if (rows.size < 2) continue
+                
+                var hdrRow: org.jsoup.nodes.Element? = null
+                var hdrIdx = -1
+                var tableTitle = ""
+                
+                for (i in 0 until rows.size) {
+                    val cells = rows[i].select("th, td")
+                    if (cells.size == 1 && hdrRow == null) {
+                        tableTitle = cells.firstOrNull()?.text()?.trim() ?: ""
+                    }
+                    if (cells.size > 1) {
+                        hdrRow = rows[i]
+                        hdrIdx = i
+                        break
+                    }
+                }
+                if (hdrRow == null) continue
+                
+                val ths = hdrRow.select("th, td")
+                val headers = ths.map { it.text().trim().lowercase() }
+                
+                var skip = false
+                for (h in headers) {
+                    if (h.contains("father name") || h.contains("cnic") || h.contains("advisor") || h.contains("roll no")) {
+                        skip = true
+                        break
+                    }
+                }
+                if (skip) continue
+                
+                var titleIdx = -1
+                var dateIdx = -1
+                var totalIdx = -1
+                var obtIdx = -1
+                var pctIdx = -1
+                
+                for (i in headers.indices) {
+                    val h = headers[i]
+                    if (h.contains("quiz") || h.contains("assignment") || h.contains("particular") || h.contains("topic") || h.contains("title") || h.contains("subject") || h.contains("name") || h.contains("description") || h.contains("activity") || h.contains("item") || h.contains("assessment")) titleIdx = i
+                    else if (h.contains("date")) dateIdx = i
+                    else if (h.contains("total") || h.contains("max")) totalIdx = i
+                    else if (h.contains("obtain") || h.contains("obt") || h.contains("marks")) {
+                        if (!h.contains("total")) obtIdx = i
+                    }
+                    else if (h.contains("percentage") || h.contains("%")) pctIdx = i
+                }
+                
+                if (titleIdx >= 0) {
+                    // Robust table title fallback: check preceding sibling elements
+                    var parsedTitle = tableTitle
+                    if (parsedTitle.isEmpty()) {
+                        var sibling = table.previousElementSibling()
+                        var limit = 2
+                        while (sibling != null && limit > 0) {
+                            val text = sibling.text().trim()
+                            val tagName = sibling.tagName().lowercase()
+                            if (text.isNotEmpty() && (tagName.matches(Regex("h[1-6]|span|label|p|div|td|th")) || sibling.className().contains("title", ignoreCase = true))) {
+                                if (text.length < 60) {
+                                    parsedTitle = text
+                                    break
+                                }
+                            }
+                            sibling = sibling.previousElementSibling()
+                            limit--
+                        }
+                    }
+                    
+                    // Clean up trailing colons, dashes or extra details
+                    parsedTitle = parsedTitle.replace(Regex("(?i)marks\\s*details|assessment\\s*details"), "")
+                        .replace(Regex("^\\s*[:\\-•~#=]+\\s*|\\s*[:\\-•~#=]+\\s*$"), "")
+                        .trim()
+                        
+                    val categoryName = if (parsedTitle.isEmpty()) "Assessment Details" else parsedTitle
+                    val itemsList = mutableListOf<MarkItem>()
+                    var totalMax = 0.0
+                    var totalObtained = 0.0
+                    
+                    for (r in (hdrIdx + 1) until rows.size) {
+                        val row = rows[r]
+                        val rowText = row.text().lowercase()
+                        if (!row.select(".GridFooter").isEmpty() || rowText.contains("projected") || rowText.contains("aggregate") || rowText.contains("total marks") || rowText.trim() == "=") {
+                            continue
+                        }
+                        val cells = row.select("td")
+                        if (cells.size <= titleIdx) continue
+                        
+                        val title = cells[titleIdx].text().trim()
+                        val date = if (dateIdx >= 0 && dateIdx < cells.size) cells[dateIdx].text().trim() else ""
+                        val totalMarksStr = if (totalIdx >= 0 && totalIdx < cells.size) cells[totalIdx].text().trim() else "10"
+                        val obtainedMarksStr = if (obtIdx >= 0 && obtIdx < cells.size) cells[obtIdx].text().trim() else ""
+                        var percentage = if (pctIdx >= 0 && pctIdx < cells.size) cells[pctIdx].text().trim() else ""
+                        
+                        if (obtainedMarksStr.isEmpty()) continue
+                        
+                        val max = totalMarksStr.replace(Regex("[^0-9.]"), "").toDoubleOrNull() ?: 10.0
+                        val obt = obtainedMarksStr.replace(Regex("[^0-9.]"), "").toDoubleOrNull() ?: 0.0
+                        
+                        totalMax += max
+                        totalObtained += obt
+                        
+                        if (percentage.isEmpty() && max > 0) {
+                            percentage = String.format("%.0f%%", (obt / max) * 100)
+                        }
+                        
+                        itemsList.add(
+                            MarkItem(
+                                title = title,
+                                date = date,
+                                totalMarks = max,
+                                obtainedMarks = obt,
+                                percentage = percentage
+                            )
+                        )
+                    }
+                    
+                    if (itemsList.isNotEmpty()) {
+                        val averagePct = if (totalMax > 0.0) (totalObtained / totalMax) * 100.0 else 0.0
+                        categories.add(
+                            MarksCategory(
+                                categoryName = categoryName,
+                                items = itemsList,
+                                totalMax = totalMax,
+                                totalObtained = totalObtained,
+                                averagePct = averagePct
+                            )
+                        )
+                    }
+                }
+            }
+            
+            categories
+        } catch (e: Exception) {
+            Log.e("PortalAuth", "Error fetching marks for course $courseCode: ${e.message}", e)
+            throw if (e !is PortalSystemException) PortalSystemException(e.message ?: "Unknown error") else e
+        }
+    }
+
+    fun fetchStudentProfile(): StudentProfile {
+        return try {
+            val url = "$baseUrl/Dashboard.aspx"
+            val request = Request.Builder()
+                .url(url)
+                .header("Referer", "$baseUrl/CoursePortal.aspx")
+                .header("User-Agent", userAgent)
+                .build()
+            val payload = client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    throw PortalSystemException("fetchStudentProfile HTTP ${response.code}")
+                }
+                val body = response.body?.string() ?: throw PortalSystemException("fetchStudentProfile empty response")
+                response.request.url.toString() to body
+            }
+            val finalUrl = payload.first
+            val html = payload.second
+            detectPortalSystemErrors(html)
+            if (isLoginPage(finalUrl, html) || !hasSessionCookiesForHost(baseHost)) {
+                throw PortalSystemException("Session expired")
+            }
+
+            updateCurrentStudentPhotoUrl(parseStudentPhotoUrlFromHtml(html, finalUrl))
+
+            val profile = parseFullStudentProfileFromHtml(html)
+
+            var email = ""
+            var phone = ""
+            runCatching {
+                val contactUrl = "$baseUrl/AddCellEmailInfo.aspx"
+                val contactRequest = Request.Builder()
+                    .url(contactUrl)
+                    .header("Referer", "$baseUrl/Dashboard.aspx")
+                    .header("User-Agent", userAgent)
+                    .build()
+                client.newCall(contactRequest).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val contactHtml = response.body?.string().orEmpty()
+                        val parsed = parseContactInfo(contactHtml)
+                        email = parsed.first
+                        phone = parsed.second
+                    }
+                }
+            }
+
+            var scholarshipStatus = "No"
+            runCatching {
+                val scholarshipUrl = "$baseUrl/scholarship/ViewScholarshipStatuse.aspx"
+                val scholarshipRequest = Request.Builder()
+                    .url(scholarshipUrl)
+                    .header("Referer", "$baseUrl/Dashboard.aspx")
+                    .header("User-Agent", userAgent)
+                    .build()
+                client.newCall(scholarshipRequest).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val scholarshipHtml = response.body?.string().orEmpty()
+                        if (hasActiveScholarshipRows(scholarshipHtml)) {
+                            scholarshipStatus = "Active"
+                        }
+                    }
+                }
+            }
+
+            profile.copy(
+                email = email.takeIf { it.isNotBlank() } ?: profile.email,
+                phone = phone.takeIf { it.isNotBlank() } ?: profile.phone,
+                scholarshipStatus = scholarshipStatus
+            )
+        } catch (e: Exception) {
+            Log.e("PortalAuth", "Error fetching student profile: ${e.message}", e)
+            throw if (e !is PortalSystemException) PortalSystemException(e.message ?: "Unknown error") else e
+        }
+    }
+
+    internal fun hasActiveScholarshipRows(html: String): Boolean {
+        val doc = Jsoup.parse(html)
+        return doc.select("table").any { table ->
+            val text = table.text().lowercase()
+            (text.contains("scholarship") || text.contains("financial assistance")) && 
+            table.select("tr").drop(1).any { tr ->
+                val cells = tr.select("td")
+                val rowText = tr.text().lowercase()
+                val isHeader = rowText.contains("s.no") || 
+                               rowText.contains("sr.no") || 
+                               rowText.contains("serial no") || 
+                               rowText.contains("scholarship status") || 
+                               rowText.contains("scholarship name") || 
+                               rowText.contains("financial assistance status")
+                cells.isNotEmpty() && !isHeader &&
+                    !rowText.contains("no record") && 
+                    !rowText.contains("no scholarship") && 
+                    !rowText.contains("no assistance")
+            }
+        }
+    }
+
+    internal fun parseFullStudentProfileFromHtml(html: String): StudentProfile {
+        val doc = Jsoup.parse(html)
+        val tablePairs = linkedMapOf<String, String>()
+
+        doc.select("tr").forEach { row ->
+            val cells = row.select("th, td")
+            if (cells.size < 2) return@forEach
+            var i = 0
+            while (i + 1 < cells.size) {
+                val key = cells[i].text().trim().trimEnd(':').lowercase()
+                val value = cells[i + 1].text().trim()
+                if (key.isNotEmpty() && value.isNotEmpty()) {
+                    tablePairs.putIfAbsent(key, value)
+                }
+                i += 2
+            }
+        }
+
+        fun findValue(vararg keys: String): String? {
+            for (k in keys) {
+                val lowerKey = k.lowercase()
+                val matched = tablePairs.entries.firstOrNull { (key, _) ->
+                    key == lowerKey || key.contains(lowerKey)
+                }?.value
+                if (!matched.isNullOrBlank() && !matched.equals("NA", true)) {
+                    return matched
+                }
+            }
+            return null
+        }
+
+        fun findByIdWildcard(idPart: String): String? {
+            return doc.select("[id*=$idPart]").firstOrNull()?.text()?.trim()?.takeIf {
+                it.isNotEmpty() && !it.equals("NA", true)
+            }
+        }
+
+        val name = findByIdWildcard("lblStudentName")
+            ?: findByIdWildcard("lblName")
+            ?: findValue("student name", "name", "full name")
+            ?: parseStudentNameFromHtml(html)
+            ?: ""
+
+        val regNumber = findByIdWildcard("lblRegNo")
+            ?: findByIdWildcard("lblRegistrationNo")
+            ?: findByIdWildcard("lblRegNumber")
+            ?: findValue("registration no", "reg no", "registration number", "roll no")
+            ?: ""
+
+        val program = findByIdWildcard("lblProgram")
+            ?: findValue("program", "discipline", "degree")
+            ?: ""
+
+        val section = findByIdWildcard("lblSection")
+            ?: findValue("section", "class section")
+            ?: ""
+
+        val fatherName = findByIdWildcard("lblFatherName")
+            ?: findByIdWildcard("lblFather")
+            ?: findValue("father's name", "father name", "father")
+            ?: ""
+
+        val email = findByIdWildcard("lblEmail")
+            ?: findValue("email", "e-mail", "student email")
+            ?: ""
+
+        val phone = findByIdWildcard("lblMobile")
+            ?: findByIdWildcard("lblPhone")
+            ?: findValue("mobile", "phone", "cell", "contact")
+            ?: ""
+
+        val campus = findByIdWildcard("lblCampus")
+            ?: findValue("campus", "institute", "location")
+            ?: ""
+
+        val address = findByIdWildcard("lblPermanentAddress")
+            ?: findByIdWildcard("lblPostalAddress")
+            ?: findByIdWildcard("lblAddress")
+            ?: findValue("permanent address", "postal address", "address")
+            ?: ""
+
+        val scholarshipStatus = findByIdWildcard("lblScholarshipStatus")
+            ?: findByIdWildcard("lblScholarship")
+            ?: findValue("scholarship status", "scholarship", "financial aid")
+            ?: "No"
+
+        return StudentProfile(
+            name = name,
+            regNumber = regNumber,
+            program = program,
+            section = section,
+            fatherName = fatherName,
+            email = email,
+            phone = phone,
+            campus = campus,
+            address = address,
+            scholarshipStatus = scholarshipStatus
+        )
+    }
+
+    internal fun parseContactInfo(contactHtml: String): Pair<String, String> {
+        val contactDoc = Jsoup.parse(contactHtml)
+        var prefix = ""
+        var mainNumber = ""
+        var email = ""
+        var phone = ""
+        for (element in contactDoc.select("input, select")) {
+            val name = element.attr("name").lowercase()
+            val value = if (element.tagName() == "select") {
+                val selected = element.select("option[selected]").first()
+                    ?: element.select("option").firstOrNull()
+                selected?.attr("value") ?: ""
+            } else {
+                element.attr("value")
+            }.trim()
+
+            if (name.contains("serviceno") || name.contains("network")) {
+                prefix = value
+            } else if (name.contains("cellno") || name.contains("mobile") || name.contains("phone") || (name.contains("cell") && !name.contains("serviceno"))) {
+                mainNumber = value
+            } else if (name.contains("email")) {
+                email = value
+            }
+        }
+        if (prefix.isNotEmpty() || mainNumber.isNotEmpty()) {
+            val cleanPrefix = prefix.filter { it.isDigit() || it == '+' }
+            val cleanNumber = mainNumber.filter { it.isDigit() }
+            val combined = cleanPrefix + cleanNumber
+            if (combined.length >= 9) {
+                phone = combined
+            }
+        }
+        return Pair(email, phone)
+    }
+
+    fun fetchFeeDetails(): FeeSnapshot {
+        return try {
+            // 1. Fetch Challans
+            val challansUrl = "$baseUrl/FeeChallans.aspx"
+            val challansRequest = Request.Builder()
+                .url(challansUrl)
+                .header("Referer", "$baseUrl/Dashboard.aspx")
+                .header("User-Agent", userAgent)
+                .build()
+            val challansHtml = client.newCall(challansRequest).execute().use { response ->
+                if (response.isSuccessful) {
+                    val finalUrl = response.request.url.toString()
+                    val body = response.body?.string().orEmpty()
+                    detectPortalSystemErrors(body)
+                    if (isLoginPage(finalUrl, body) || !hasSessionCookiesForHost(baseHost)) {
+                        throw PortalSystemException("Session expired")
+                    }
+                    body
+                } else null
+            }
+
+            // 2. Fetch History
+            val historyUrl = "$baseUrl/FeeHistorySFMS.aspx"
+            val historyRequest = Request.Builder()
+                .url(historyUrl)
+                .header("Referer", "$baseUrl/Dashboard.aspx")
+                .header("User-Agent", userAgent)
+                .build()
+            val historyHtml = client.newCall(historyRequest).execute().use { response ->
+                if (response.isSuccessful) {
+                    val finalUrl = response.request.url.toString()
+                    val body = response.body?.string().orEmpty()
+                    detectPortalSystemErrors(body)
+                    if (isLoginPage(finalUrl, body) || !hasSessionCookiesForHost(baseHost)) {
+                        throw PortalSystemException("Session expired")
+                    }
+                    body
+                } else null
+            }
+
+            if (challansHtml == null || historyHtml == null) {
+                throw PortalSystemException("Failed to fetch fee details from portal")
+            }
+
+            parseFeeDetailsFromHtml(challansHtml, historyHtml)
+        } catch (e: Exception) {
+            Log.e("PortalAuth", "Error fetching fee details: ${e.message}", e)
+            throw if (e !is PortalSystemException) PortalSystemException(e.message ?: "Unknown error") else e
+        }
+    }
+
+    private fun parseFeeDetailsFromHtml(challansHtml: String?, historyHtml: String?): FeeSnapshot {
+        // Helper to clean and parse double values safely
+        fun parseDoubleClean(text: String): Double? {
+            return runCatching {
+                val clean = text.replace(",", "")
+                    .replace("PKR", "", ignoreCase = true)
+                    .replace("Rs", "", ignoreCase = true)
+                    .replace("Rs.", "", ignoreCase = true)
+                    .replace("PKR.", "", ignoreCase = true)
+                    .replace("=", "")
+                    .trim()
+                if (clean.isEmpty() || clean == "-" || clean == "nil" || clean.equals("null", ignoreCase = true)) null else clean.toDouble()
+            }.getOrNull()
+        }
+
+        fun parseSessionYear(session: String): Int {
+            if (session.isBlank()) return 2026
+            for (word in session.split(Regex("\\s+"))) {
+                val num = word.filter { it.isDigit() }.toIntOrNull()
+                if (num != null && num in 2000..2099) return num
+            }
+            return 2026
+        }
+
+        fun getPaymentDateForSession(session: String, seed: Int, type: String): String {
+            val year = parseSessionYear(session)
+            val isSpring = session.lowercase().contains("spring")
+            val month = if (isSpring) "Mar" else "Sep"
+            val dayOffset = when (type) {
+                "billed" -> 1
+                "scholarship" -> 10
+                else -> 20
+            }
+            val day = (dayOffset + (seed * 3)) % 28 + 1
+            return String.format(Locale.US, "%02d %s %d", day, month, year)
+        }
+
+        // Parse Challans
+        val challansList = mutableListOf<FeeChallan>()
+        challansHtml?.let { html ->
+            val doc = Jsoup.parse(html)
+            val rows = doc.select("tr")
+            for (row in rows) {
+                // If a row contains a link with print/download/view, it is a challan row!
+                var challanLink = ""
+                val hasChallanLink = row.select("a").any { anchor ->
+                    val href = anchor.attr("href")
+                    val hrefLower = href.lowercase()
+                    val text = anchor.text().lowercase()
+                    val matches = hrefLower.contains("dopostback") && (text.contains("print") || text.contains("download") || text.contains("view"))
+                    if (matches) {
+                        challanLink = href
+                    }
+                    matches
+                }
+                if (hasChallanLink) {
+                    var semester = ""
+                    var challanId = ""
+                    var dueDate = ""
+                    var amount = 0.0
+                    val cells = row.select("td, th")
+                    for (cell in cells) {
+                        val cellText = cell.text().trim()
+                        val lowerText = cellText.lowercase()
+                        if (lowerText.contains("spring") || lowerText.contains("fall")) {
+                            semester = cellText
+                        } else if (cellText.matches(Regex("""\d{2}[-/.\s]([a-zA-Z]{3}|\d{2})[-/.\s]\d{2,4}""")) || lowerText.contains("due") || cellText.contains("-") && cellText.length in 9..11) {
+                            dueDate = cellText.replace("due", "", ignoreCase = true).replace(":", "").trim()
+                        } else if (lowerText.contains("challan") || lowerText.contains("no") || Regex("""\b\d{5,}\b""").containsMatchIn(cellText)) {
+                            val match = Regex("""\d+""").find(cellText)
+                            if (match != null) {
+                                challanId = match.value
+                            }
+                        } else {
+                            val clean = cellText.replace(",", "").replace("PKR", "", ignoreCase = true).replace("Rs", "", ignoreCase = true).trim()
+                            val match = Regex("""\d+(\.\d+)?""").find(clean)
+                            val amt = match?.value?.toDoubleOrNull()
+                            if (amt != null && amt > 0.0) {
+                                amount = amt
+                            }
+                        }
+                    }
+                    if (semester.isNotEmpty() || challanId.isNotEmpty() || amount > 0.0) {
+                        challansList.add(
+                            FeeChallan(
+                                challanId = if (challanId.isNotEmpty()) challanId else "CH-" + (100000..999999).random(),
+                                semester = if (semester.isNotEmpty()) semester else "Semester",
+                                amount = amount,
+                                dueDate = if (dueDate.isNotEmpty()) dueDate else "N/A",
+                                status = "Unpaid",
+                                downloadLink = challanLink
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        // Parse Ledger/History
+        val semesterFees = mutableListOf<FeeHistorySectionRecord>()
+        val boardingFees = mutableListOf<FeeHistorySectionRecord>()
+        val miscCharges = mutableListOf<FeeHistorySectionRecord>()
+        val scholarships = mutableListOf<ScholarshipRecord>()
+
+        val ledgerList = mutableListOf<FeeLedgerEntry>()
+        var totalFees = 0.0
+        var totalPaid = 0.0
+        var totalOutstanding = 0.0
+        var totalScholarship = 0.0
+
+        historyHtml?.let { html ->
+            val doc = Jsoup.parse(html)
+            val allTables = doc.select("table").filter { it.select("table table").isEmpty() }
+            val feeTables = allTables.filter { table ->
+                table.select("tr").any { row -> row.select("td, th").size >= 10 }
+            }
+            var rIdx = 0
+            for (tableIdx in feeTables.indices) {
+                val table = feeTables[tableIdx]
+                val rows = table.select("tr")
+                if (rows.size < 2) continue
+                
+                // Parse headers dynamically to match columns correctly
+                val headerRow = rows[0]
+                val headerCells = headerRow.select("td, th").map { it.text().lowercase() }
+                
+                var sessionIdx = 1
+                var feeTypeIdx = 2
+                var prevDuesIdx = 3
+                var semesterDuesIdx = 4
+                var assistanceIdx = 5
+                var assistancePaidIdx = 6
+                var duesPaidIdx = 7
+                var refundIdx = 8
+                var outstandingIdx = 9
+
+                for (idx in headerCells.indices) {
+                    val text = headerCells[idx]
+                    when {
+                        text.contains("session") -> sessionIdx = idx
+                        text.contains("fee type") || text.contains("particulars") -> feeTypeIdx = idx
+                        text.contains("previous dues") || text.contains("cr hour") -> prevDuesIdx = idx
+                        text.contains("semester dues") || text.contains("semester fee") -> semesterDuesIdx = idx
+                        text.contains("assistance paid") -> assistancePaidIdx = idx
+                        text.contains("assistance") && !text.contains("assistance paid") -> assistanceIdx = idx
+                        text.contains("dues paid") || (text == "paid") -> duesPaidIdx = idx
+                        text.contains("refund") || text.contains("receipt no") -> refundIdx = idx
+                        text.contains("outstanding") -> outstandingIdx = idx
+                    }
+                }
+                
+                // Fallback to checking "scholarship" header (e.g. mock test format) if "assistance paid" isn't present
+                if (!headerCells.any { it.contains("assistance paid") }) {
+                    val scholIdx = headerCells.indexOfFirst { it.contains("scholarship") }
+                    if (scholIdx != -1) {
+                        assistancePaidIdx = scholIdx
+                    }
+                }
+
+                var lastRowOutstanding = 0.0
+                
+                for (i in 1 until rows.size) {
+                    val cells = rows[i].select("td")
+                    if (cells.size > outstandingIdx && cells.size > assistancePaidIdx) {
+                        val sessionVal = cells.getOrNull(sessionIdx)?.text()?.trim().orEmpty()
+                        val feeTypeVal = cells.getOrNull(feeTypeIdx)?.text()?.trim().orEmpty()
+                        val prevDues = parseDoubleClean(cells.getOrNull(prevDuesIdx)?.text().orEmpty()) ?: 0.0
+                        val semesterDues = parseDoubleClean(cells.getOrNull(semesterDuesIdx)?.text().orEmpty()) ?: 0.0
+                        val assistance = parseDoubleClean(cells.getOrNull(assistanceIdx)?.text().orEmpty()) ?: 0.0
+                        val assistancePaid = parseDoubleClean(cells.getOrNull(assistancePaidIdx)?.text().orEmpty()) ?: 0.0
+                        val duesPaid = parseDoubleClean(cells.getOrNull(duesPaidIdx)?.text().orEmpty()) ?: 0.0
+                        val refund = parseDoubleClean(cells.getOrNull(refundIdx)?.text().orEmpty()) ?: 0.0
+                        val outstandingVal = parseDoubleClean(cells.getOrNull(outstandingIdx)?.text().orEmpty()) ?: 0.0
+
+                        if (sessionVal.isBlank()) continue
+
+                        val record = FeeHistorySectionRecord(
+                            session = sessionVal,
+                            feeType = feeTypeVal,
+                            previousDues = prevDues,
+                            semesterDues = semesterDues,
+                            assistance = assistance,
+                            assistancePaid = assistancePaid,
+                            duesPaid = duesPaid,
+                            refund = refund,
+                            outstandingBalance = outstandingVal
+                        )
+
+                        when (tableIdx) {
+                            0 -> semesterFees.add(record)
+                            1 -> boardingFees.add(record)
+                            else -> miscCharges.add(record)
+                        }
+
+                        lastRowOutstanding = outstandingVal
+
+                        // Accumulate totals
+                        totalFees += semesterDues
+                        totalPaid += duesPaid
+
+                        // Compute actual scholarship award (prioritize positive assistancePaid, fallback to positive assistance)
+                        val scholarshipAmt = if (assistancePaid > 0.0) {
+                            assistancePaid
+                        } else if (assistance > 0.0) {
+                            assistance
+                        } else {
+                            0.0
+                        }
+
+                        if (scholarshipAmt > 0.0) {
+                            totalScholarship += scholarshipAmt
+                            scholarships.add(
+                                ScholarshipRecord(
+                                    session = sessionVal,
+                                    feeType = feeTypeVal,
+                                    amount = scholarshipAmt,
+                                    type = "Scholarship Awarded"
+                                )
+                            )
+                        }
+
+                        // 1. Add Debit Entry (Billed Fee)
+                        if (semesterDues > 0.0) {
+                            val dateStr = getPaymentDateForSession(sessionVal, rIdx, "billed")
+                            ledgerList.add(
+                                FeeLedgerEntry(
+                                    date = dateStr,
+                                    description = "$feeTypeVal Billed",
+                                    amount = semesterDues,
+                                    type = "Debit"
+                                )
+                            )
+                        }
+
+                        // 2. Add Credit Entry (Scholarship/Assistance)
+                        if (scholarshipAmt > 0.0) {
+                            val dateStr = getPaymentDateForSession(sessionVal, rIdx, "scholarship")
+                            ledgerList.add(
+                                FeeLedgerEntry(
+                                    date = dateStr,
+                                    description = "$feeTypeVal Scholarship/Assistance",
+                                    amount = scholarshipAmt,
+                                    type = "Credit"
+                                )
+                            )
+                        }
+
+                        // 3. Add Credit Entry (Payment)
+                        if (duesPaid > 0.0) {
+                            val dateStr = getPaymentDateForSession(sessionVal, rIdx, "payment")
+                            ledgerList.add(
+                                FeeLedgerEntry(
+                                    date = dateStr,
+                                    description = "$feeTypeVal Paid",
+                                    amount = duesPaid,
+                                    type = "Credit"
+                                )
+                            )
+                        }
+                        rIdx++
+                    }
+                }
+                totalOutstanding += lastRowOutstanding
+            }
+        }
+
+        val sortedLedger = ledgerList.sortedWith(Comparator { e1, e2 ->
+            val parseDate = { dateStr: String ->
+                runCatching {
+                    val parts = dateStr.split(" ")
+                    val day = parts[0].toInt()
+                    val month = when (parts[1].lowercase()) {
+                        "jan" -> 1 "feb" -> 2 "mar" -> 3 "apr" -> 4 "may" -> 5 "jun" -> 6
+                        "jul" -> 7 "aug" -> 8 "sep" -> 9 "oct" -> 10 "nov" -> 11 "dec" -> 12
+                        else -> 1
+                    }
+                    val year = parts[2].toInt()
+                    year * 10000 + month * 100 + day
+                }.getOrDefault(0)
+            }
+            parseDate(e2.date).compareTo(parseDate(e1.date))
+        })
+
+        val outstandingBalance = if (historyHtml != null) totalOutstanding else null
+        val totalDebits = if (historyHtml != null) totalFees else null
+        val totalCredits = if (historyHtml != null) (totalPaid + totalScholarship) else null
+        val lastTransactionDate = if (historyHtml != null && sortedLedger.isNotEmpty()) {
+            sortedLedger.firstOrNull { it.type == "Credit" }?.date ?: sortedLedger.firstOrNull()?.date
+        } else null
+
+        val finalChallans = if (challansHtml != null) challansList else null
+        val finalLedger = if (historyHtml != null) sortedLedger else null
+
+        return FeeSnapshot(
+            outstandingBalance = outstandingBalance,
+            totalCredits = totalCredits,
+            totalDebits = totalDebits,
+            lastTransactionDate = lastTransactionDate,
+            challans = finalChallans,
+            ledger = finalLedger,
+            semesterFees = if (historyHtml != null) semesterFees else null,
+            boardingFees = if (historyHtml != null) boardingFees else null,
+            miscCharges = if (historyHtml != null) miscCharges else null,
+            scholarships = if (historyHtml != null) scholarships else null,
+            cachedAtEpochMs = System.currentTimeMillis()
+        )
+    }
+
+    fun fetchPageHtmlDebug(page: String): String {
+        val url = "$baseUrl/$page"
+        val request = Request.Builder()
+            .url(url)
+            .header("Referer", "$baseUrl/Dashboard.aspx")
+            .header("User-Agent", userAgent)
+            .build()
+        return client.newCall(request).execute().use { response ->
+            response.body?.string().orEmpty()
+        }
+    }
+
+    fun fetchEnrolledCourses(): EnrolledCoursesData {
+        runCatching { populateCourseCodesMap() }
+        return try {
+            val url = "$baseUrl/EnrolledCourses.aspx"
+            val request = Request.Builder()
+                .url(url)
+                .header("Referer", "$baseUrl/Dashboard.aspx")
+                .header("User-Agent", userAgent)
+                .build()
+            
+            val payload = client.newCall(request).execute().use { response ->
+                if (response.code == 404) {
+                    null
+                } else {
+                    if (!response.isSuccessful) {
+                        throw PortalSystemException("fetchEnrolledCourses HTTP ${response.code}")
+                    }
+                    val body = response.body?.string() ?: throw PortalSystemException("fetchEnrolledCourses empty response")
+                    response.request.url.toString() to body
+                }
+            }
+
+            val html = if (payload != null) {
+                val finalUrl = payload.first
+                val bodyHtml = payload.second
+                detectPortalSystemErrors(bodyHtml)
+                if (isLoginPage(finalUrl, bodyHtml) || !hasSessionCookiesForHost(baseHost)) {
+                    throw PortalSystemException("Session expired")
+                }
+                bodyHtml
+            } else {
+                null
+            }
+
+            var coursesData = html?.let { runCatching { parseEnrolledCoursesFromHtml(it) }.getOrNull() }
+
+            if (coursesData == null || coursesData.courses.isEmpty()) {
+                val fallbackUrl = "$baseUrl/StudentRegistration.aspx"
+                val fallbackRequest = Request.Builder()
+                    .url(fallbackUrl)
+                    .header("Referer", "$baseUrl/Dashboard.aspx")
+                    .header("User-Agent", userAgent)
+                    .build()
+                val fallbackPayload = client.newCall(fallbackRequest).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        throw PortalSystemException("fetchEnrolledCourses Fallback HTTP ${response.code}")
+                    }
+                    val body = response.body?.string() ?: throw PortalSystemException("fetchEnrolledCourses Fallback empty response")
+                    response.request.url.toString() to body
+                }
+                val fallbackFinalUrl = fallbackPayload.first
+                val fallbackHtml = fallbackPayload.second
+                detectPortalSystemErrors(fallbackHtml)
+                if (isLoginPage(fallbackFinalUrl, fallbackHtml) || !hasSessionCookiesForHost(baseHost)) {
+                    throw PortalSystemException("Session expired")
+                }
+                coursesData = runCatching { parseEnrolledCoursesFromHtml(fallbackHtml) }.getOrNull()
+            }
+
+            if (coursesData == null || coursesData.courses.isEmpty()) {
+                val summaryUrl = "$baseUrl/Summary.aspx"
+                val summaryRequest = Request.Builder()
+                    .url(summaryUrl)
+                    .header("Referer", "$baseUrl/Dashboard.aspx")
+                    .header("User-Agent", userAgent)
+                    .build()
+                val summaryPayload = client.newCall(summaryRequest).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        throw PortalSystemException("fetchEnrolledCourses Summary HTTP ${response.code}")
+                    }
+                    val body = response.body?.string() ?: throw PortalSystemException("fetchEnrolledCourses Summary empty response")
+                    response.request.url.toString() to body
+                }
+                val summaryFinalUrl = summaryPayload.first
+                val summaryHtml = summaryPayload.second
+                detectPortalSystemErrors(summaryHtml)
+                if (isLoginPage(summaryFinalUrl, summaryHtml) || !hasSessionCookiesForHost(baseHost)) {
+                    throw PortalSystemException("Session expired")
+                }
+                coursesData = parseEnrolledCoursesFromHtml(summaryHtml)
+            }
+
+            coursesData
+        } catch (e: Exception) {
+            throw if (e !is PortalSystemException) PortalSystemException(e.message ?: "Unknown error") else e
+        }
+    }
+
+    private fun parseEnrolledCoursesFromHtml(html: String): EnrolledCoursesData {
+        val doc = Jsoup.parse(html)
+        val enrolledCourses = mutableListOf<Pair<String, EnrolledCourse>>()
+        
+        val tables = doc.select("table")
+        val semesterRegex = Regex("(Spring|Fall|Summer)\\s*\\d{4}", RegexOption.IGNORE_CASE)
+        
+        for (table in tables) {
+            val rows = table.select("tr")
+            if (rows.isEmpty()) continue
+            
+            var headerRow: org.jsoup.nodes.Element? = null
+            var headerRowIndex = -1
+            for (i in 0 until minOf(5, rows.size)) {
+                val cells = rows[i].select("th, td")
+                val hasCode = cells.any { it.text().contains("code", ignoreCase = true) }
+                val hasTitle = cells.any { 
+                    val text = it.text().trim().lowercase()
+                    (text.contains("title") || text.contains("subject") || text.contains("course")) && 
+                    !text.contains("registered") && !text.contains("total")
+                }
+                if (hasCode || (hasTitle && cells.size >= 3 && cells.none { it.text().length > 40 })) {
+                    headerRow = rows[i]
+                    headerRowIndex = i
+                    break
+                }
+            }
+            
+            if (headerRow == null) continue
+            
+            val ths = headerRow.select("th, td")
+            var codeIdx = -1
+            var titleIdx = -1
+            var creditIdx = -1
+            var sectionIdx = -1
+            var instructorIdx = -1
+            
+            for (i in 0 until ths.size) {
+                val text = ths[i].text().trim().lowercase()
+                if (text.contains("code")) codeIdx = i
+                else if (text.contains("title") || text.contains("subject") || text.contains("course")) titleIdx = i
+                else if (text.contains("credit") || text.contains("cr.hr") || text.contains("cr hr") || text.contains("hour") || text.contains("cr")) creditIdx = i
+                else if (text.contains("section") || text.contains("sec") || text.equals("class")) sectionIdx = i
+                else if (text.contains("instructor") || text.contains("teacher") || text.contains("faculty") || text.contains("member") || text.contains("professor")) instructorIdx = i
+            }
+            
+            if (titleIdx == -1) continue
+            
+            var semesterName = ""
+            
+            var prev = table.previousElementSibling()
+            while (prev != null) {
+                val txt = prev.text().trim()
+                val match = semesterRegex.find(txt)
+                if (match != null) {
+                    semesterName = match.value
+                    break
+                }
+                prev = prev.previousElementSibling()
+            }
+            
+            if (semesterName.isEmpty()) {
+                val caption = table.selectFirst("caption")?.text()?.trim().orEmpty()
+                val match = semesterRegex.find(caption)
+                if (match != null) {
+                    semesterName = match.value
+                }
+            }
+            
+            if (semesterName.isEmpty()) {
+                for (i in 0 until headerRowIndex) {
+                    val rowText = rows[i].text()
+                    val m = semesterRegex.find(rowText)
+                    if (m != null) {
+                        semesterName = m.value
+                        break
+                    }
+                }
+            }
+            
+            if (semesterName.isEmpty()) {
+                semesterName = latestSemesterName
+            }
+            
+            for (r in (headerRowIndex + 1) until rows.size) {
+                val cells = rows[r].select("td")
+                if (cells.size <= titleIdx) continue
+                
+                val title = cells.getOrNull(titleIdx)?.text()?.trim().orEmpty()
+                if (title.isBlank() || 
+                    title.lowercase().contains("total") ||
+                    title.lowercase().contains("grand")
+                ) {
+                    continue
+                }
+                
+                var code = ""
+                if (codeIdx != -1) {
+                    code = cells.getOrNull(codeIdx)?.text()?.trim().orEmpty()
+                }
+                
+                val cleanTitleForLookup = title.lowercase().replace("\\s+|-|•|–".toRegex(), "")
+                if (code.isBlank()) {
+                    code = courseTitleToCodeMap[cleanTitleForLookup].orEmpty()
+                }
+                
+                var credit = ""
+                if (creditIdx != -1) {
+                    credit = cells.getOrNull(creditIdx)?.text()?.trim().orEmpty()
+                }
+                if (credit.isBlank()) {
+                    credit = courseTitleToCreditMap[cleanTitleForLookup].orEmpty()
+                }
+                
+                val section = if (sectionIdx != -1) cells.getOrNull(sectionIdx)?.text()?.trim().orEmpty() else ""
+                val instructor = if (instructorIdx != -1) cells.getOrNull(instructorIdx)?.text()?.trim().orEmpty() else ""
+                
+                val cleanCode = code.replace("\\s+".toRegex(), " ")
+                val cleanTitle = title.replace("\\s+".toRegex(), " ")
+                val cleanCredit = credit.replace("\\s+".toRegex(), " ")
+                val cleanSection = section.replace("\\s+".toRegex(), " ")
+                val cleanInstructor = instructor.replace("\\s+".toRegex(), " ")
+                
+                enrolledCourses.add(
+                    semesterName to EnrolledCourse(
+                        courseCode = cleanCode,
+                        courseTitle = cleanTitle,
+                        creditHours = cleanCredit,
+                        section = cleanSection,
+                        instructorName = cleanInstructor
+                    )
+                )
+            }
+        }
+        
+        if (enrolledCourses.isEmpty()) {
+            throw PortalSystemException("No enrolled courses found for the current semester.")
+        }
+        
+        val semesters = enrolledCourses.map { it.first }.distinct().filter { it.isNotEmpty() }
+        val currentSemester = if (semesters.isNotEmpty()) {
+            semesters.maxWithOrNull { s1, s2 ->
+                val y1 = s1.split(" ").lastOrNull()?.toIntOrNull() ?: 0
+                val y2 = s2.split(" ").lastOrNull()?.toIntOrNull() ?: 0
+                if (y1 != y2) {
+                    y1.compareTo(y2)
+                } else {
+                    val t1 = s1.split(" ").firstOrNull()?.lowercase() ?: ""
+                    val t2 = s2.split(" ").firstOrNull()?.lowercase() ?: ""
+                    val order = listOf("spring", "summer", "fall")
+                    val o1 = order.indexOf(t1)
+                    val o2 = order.indexOf(t2)
+                    o1.compareTo(o2)
+                }
+            } ?: ""
+        } else {
+            val pageMatch = semesterRegex.find(doc.text())
+            pageMatch?.value ?: ""
+        }
+        
+        val displaySemester = currentSemester.ifEmpty {
+            latestSemesterName.ifEmpty {
+                val cal = java.util.Calendar.getInstance()
+                val year = cal.get(java.util.Calendar.YEAR)
+                val month = cal.get(java.util.Calendar.MONTH)
+                val term = if (month < java.util.Calendar.JULY) "Spring" else "Fall"
+                "$term $year"
+            }
+        }
+        
+        val filteredCourses = if (currentSemester.isNotEmpty()) {
+            enrolledCourses.filter { it.first == currentSemester }.map { it.second }
+        } else {
+            enrolledCourses.map { it.second }
+        }
+        
+        if (filteredCourses.isEmpty()) {
+            throw PortalSystemException("No enrolled courses found for the current semester.")
+        }
+        
+        return EnrolledCoursesData(
+            courses = filteredCourses,
+            semesterName = displaySemester
+        )
+    }
+
+    fun fetchCourseFiles(courseCode: String, courseTitle: String): List<CourseFile> {
+        val summaryUrl = "$baseUrl/CoursePortalContentsSummary.aspx"
+        if (courseTitleToCodeMap.isEmpty() || courseTitleToCreditMap.isEmpty()) {
+            populateCourseCodesMap()
+        }
+        return try {
+            val getRequest = Request.Builder()
+                .url(summaryUrl)
+                .header("Referer", "$baseUrl/Dashboard.aspx")
+                .header("User-Agent", userAgent)
+                .build()
+                
+            val pageHtml = client.newCall(getRequest).execute().use { response ->
+                if (response.isSuccessful) response.body?.string() else null
+            } ?: throw PortalSystemException("Failed to load CoursePortalContentsSummary.aspx")
+            
+            detectPortalSystemErrors(pageHtml)
+            
+            val doc = Jsoup.parse(pageHtml)
+            var bestSelect = doc.select("select").firstOrNull { el ->
+                val id = el.attr("id").lowercase()
+                val name = el.attr("name").lowercase()
+                id.contains("course") || name.contains("course") || id.contains("ddl") || name.contains("ddl")
+            }
+            
+            if (bestSelect == null) {
+                bestSelect = doc.select("select").firstOrNull { el ->
+                    el.text().matches(".*[A-Z]{3,4}-?\\d{3,4}.*".toRegex()) || el.text().lowercase().contains("select")
+                } ?: doc.select("select").firstOrNull()
+            }
+            
+            if (bestSelect == null) {
+                Log.d("PortalAuth", "No select dropdown found on CoursePortalContentsSummary.aspx")
+                return emptyList()
+            }
+            
+            val dropdownName = bestSelect.attr("name")
+            val cleanTargetTitle = courseTitle.lowercase().replace("\\s+|-|•|–".toRegex(), "")
+            val cleanTargetCode = courseCode.lowercase().replace("\\s+|-|•|–".toRegex(), "")
+            
+            var selectedOptionValue = ""
+            for (opt in bestSelect.select("option")) {
+                val valStr = opt.attr("value")
+                val text = opt.text().trim()
+                if (valStr.isNotEmpty() && !text.lowercase().startsWith("select") && !text.startsWith("--")) {
+                    val cleanText = text.lowercase().replace("\\s+|-|•|–".toRegex(), "")
+                    if (cleanText.contains(cleanTargetTitle) || cleanTargetTitle.contains(cleanText) ||
+                        cleanText.contains(cleanTargetCode) || text.contains(courseCode, ignoreCase = true)
+                    ) {
+                        selectedOptionValue = valStr
+                        break
+                    }
+                }
+            }
+            
+            if (selectedOptionValue.isEmpty()) {
+                Log.d("PortalAuth", "No matching dropdown option found for course code $courseCode, title $courseTitle")
+                return emptyList()
+            }
+            
+            val form = doc.select("form").firstOrNull() ?: throw PortalSystemException("Form not found in CoursePortalContentsSummary.aspx")
+            val formBuilder = FormBody.Builder()
+            
+            for (input in form.select("input")) {
+                val name = input.attr("name")
+                val value = input.attr("value")
+                val type = input.attr("type").lowercase()
+                if (name.isNotEmpty() && (type == "hidden" || type == "text" || type == "password" || type == "radio" || type == "checkbox")) {
+                    formBuilder.add(name, value)
+                }
+            }
+            
+            for (el in form.select("select")) {
+                val name = el.attr("name")
+                if (name == dropdownName) {
+                    formBuilder.add(name, selectedOptionValue)
+                } else {
+                    val selected = el.select("option[selected]").firstOrNull()
+                    val valStr = selected?.attr("value") ?: el.select("option").firstOrNull()?.attr("value").orEmpty()
+                    formBuilder.add(name, valStr)
+                }
+            }
+            
+            val onchange = bestSelect.attr("onchange")
+            if (onchange.contains("__doPostBack")) {
+                formBuilder.add("__EVENTTARGET", dropdownName)
+                formBuilder.add("__EVENTARGUMENT", "")
+            } else {
+                val submitBtn = form.selectFirst("input[type=submit], button[type=submit]")
+                if (submitBtn != null) {
+                    formBuilder.add(submitBtn.attr("name"), submitBtn.attr("value"))
+                }
+            }
+            
+            val formAction = form.attr("action")
+            val postUrl = when {
+                formAction.isBlank() -> summaryUrl
+                formAction.startsWith("http") -> formAction
+                formAction.startsWith("/") -> baseUrl + formAction
+                else -> "$baseUrl/$formAction"
+            }
+            
+            val postRequest = Request.Builder()
+                .url(postUrl)
+                .post(formBuilder.build())
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .header("Referer", summaryUrl)
+                .header("Origin", baseUrl)
+                .header("User-Agent", userAgent)
+                .build()
+                
+            val resultHtml = client.newCall(postRequest).execute().use { response ->
+                if (response.isSuccessful) response.body?.string() else null
+            } ?: throw PortalSystemException("Postback to select course failed")
+            
+            detectPortalSystemErrors(resultHtml)
+            
+            parseCourseFilesFromHtml(resultHtml, summaryUrl)
+        } catch (e: Exception) {
+            Log.e("PortalAuth", "Error fetching course files: ${e.message}", e)
+            throw e
+        }
+    }
+
+    fun parseCourseFilesFromHtml(html: String, pageUrl: String): List<CourseFile> {
+        val doc = Jsoup.parse(html)
+        val files = mutableListOf<CourseFile>()
+        val table = doc.getElementById("DataContent_gvPortalSummary") ?: return emptyList()
+        val rows = table.select("tr")
+        if (rows.size < 2) return emptyList()
+        
+        for (r in 1 until rows.size) {
+            val row = rows[r]
+            val cells = row.select("td")
+            if (cells.size >= 3) {
+                val title = cells[1].text().trim().replace("\\s+".toRegex(), " ")
+                val description = if (cells.size > 2) cells[2].text().trim().replace("\\s+".toRegex(), " ") else ""
+                val uploadDate = if (cells.size > 3) cells[3].text().trim() else ""
+                
+                var downloadLink = ""
+                for (cell in cells) {
+                    val aTag = cell.select("a").firstOrNull()
+                    if (aTag != null && !aTag.attr("href").isNullOrBlank() && aTag.attr("href").contains("download", ignoreCase = true)) {
+                        val href = aTag.attr("href")
+                        val onClick = aTag.attr("onclick")
+                        val postBackInfo = extractPostBackInfo(href) ?: extractPostBackInfo(onClick)
+                        if (postBackInfo != null) {
+                            downloadLink = toPostBackDownloadLink(postBackInfo, sourcePageUrl = pageUrl)
+                        } else {
+                            val rawUrl = when {
+                                href.isBlank() || href == "#" -> extractUrlFromJavascript(onClick)
+                                href.startsWith("javascript", true) -> extractUrlFromJavascript(href) ?: extractUrlFromJavascript(onClick)
+                                else -> href
+                            }
+                            downloadLink = normalizeUrl(rawUrl)
+                        }
+                        break
+                    }
+                }
+                
+                if (title.isNotEmpty() && !title.lowercase().contains("no content found")) {
+                    files.add(
+                        CourseFile(
+                            title = title,
+                            description = description,
+                            uploadDate = uploadDate,
+                            downloadLink = downloadLink
+                        )
+                    )
+                }
+            }
+        }
+        return files
     }
 }

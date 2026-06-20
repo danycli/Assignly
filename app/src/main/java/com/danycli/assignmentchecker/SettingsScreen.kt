@@ -33,6 +33,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -50,9 +51,12 @@ fun SettingsScreen(
     var updateNotificationsEnabled by remember { mutableStateOf(initialSettings.updateNotificationsEnabled) }
     var uploadNotificationsEnabled by remember { mutableStateOf(initialSettings.uploadNotificationsEnabled) }
     var assignmentNotificationsEnabled by remember { mutableStateOf(initialSettings.assignmentNotificationsEnabled) }
+    var marksNotificationsEnabled by remember { mutableStateOf(initialSettings.marksNotificationsEnabled) }
     var downloadBehavior by remember { mutableStateOf(initialSettings.downloadBehavior) }
     var themeMode by remember { mutableStateOf(initialSettings.themeMode) }
+    var rememberRegistrationNumber by remember { mutableStateOf(initialSettings.rememberRegistrationNumber) }
 
+    val context = LocalContext.current
     val intervalOptions = listOf(1L, 3L, 6L, 12L, 24L)
     fun buildSettings() = AppSettings(
         backgroundSyncEnabled = backgroundSyncEnabled,
@@ -61,8 +65,10 @@ fun SettingsScreen(
         updateNotificationsEnabled = updateNotificationsEnabled,
         uploadNotificationsEnabled = uploadNotificationsEnabled,
         assignmentNotificationsEnabled = assignmentNotificationsEnabled,
+        marksNotificationsEnabled = marksNotificationsEnabled,
         downloadBehavior = downloadBehavior,
-        themeMode = themeMode
+        themeMode = themeMode,
+        rememberRegistrationNumber = rememberRegistrationNumber
     )
 
     Scaffold(
@@ -180,6 +186,15 @@ fun SettingsScreen(
                                 onSaveSettings(buildSettings())
                             }
                         )
+                        SettingToggleRow(
+                            title = "Marks notifications",
+                            subtitle = "New assessment marks and updates.",
+                            checked = marksNotificationsEnabled,
+                            onCheckedChange = {
+                                marksNotificationsEnabled = it
+                                onSaveSettings(buildSettings())
+                            }
+                        )
                     }
                 }
             }
@@ -250,6 +265,27 @@ fun SettingsScreen(
                             "Auto-save stores files in your Downloads folder.",
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                             fontSize = 12.sp
+                        )
+                    }
+                }
+            }
+
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("Security & Login", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                        SettingToggleRow(
+                            title = "Remember registration number",
+                            subtitle = "Stores previously logged in registration numbers for quick selection.",
+                            checked = rememberRegistrationNumber,
+                            onCheckedChange = {
+                                rememberRegistrationNumber = it
+                                val newSettings = buildSettings()
+                                onSaveSettings(newSettings)
+                                if (!it) {
+                                    RegistrationHistoryStore.clearAll(context)
+                                }
+                            }
                         )
                     }
                 }

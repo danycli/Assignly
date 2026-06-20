@@ -103,6 +103,71 @@ class AssignmentSyncWorker(
                         TimetableCacheStore.saveSnapshot(applicationContext, fetchedTimetable)
                     }
 
+                    // Fetch and sync student profile & photo in the background
+                    runCatching {
+                        val prof = repository.fetchStudentProfile()
+                        ProfileCacheStore.saveSnapshot(applicationContext, prof)
+                        val photo = repository.fetchCurrentStudentPhoto()
+                        if (photo != null) {
+                            ProfileCacheStore.savePhoto(applicationContext, photo)
+                        }
+                    }.onFailure { err ->
+                        Log.e("AssignmentSyncWorker", "Failed to background-fetch profile: ${err.message}")
+                    }
+
+                    // Fetch and sync assessment marks in the background if marks notifications are enabled
+                    if (settings.marksNotificationsEnabled) {
+                        try {
+                            val cachedAttendance = AttendanceCacheStore.loadSnapshot(applicationContext)
+                            val courses = cachedAttendance?.summary?.map { it.courseCode } ?: emptyList()
+                            val courseNamesMap = cachedAttendance?.summary?.associate { it.courseCode to it.courseName } ?: emptyMap()
+                            
+                            if (courses.isNotEmpty()) {
+                                val previousMarksSnapshot = MarksCacheStore.loadSnapshot(applicationContext)
+                                val previousMarksList = previousMarksSnapshot?.courseMarksList ?: emptyList()
+                                val previousMarksMap = previousMarksList.associateBy { it.courseCode.trim().uppercase() }
+
+                                val fetchedMarks = mutableListOf<CourseMarks>()
+                                for (code in courses) {
+                                    val cleanCode = code.trim().uppercase()
+                                    val cachedCourse = previousMarksMap[cleanCode]
+
+                                    runCatching {
+                                        val categories = repository.fetchMarks(code)
+                                        val name = courseNamesMap[code] ?: ""
+                                        if (categories.isEmpty() && cachedCourse != null && cachedCourse.categories.isNotEmpty()) {
+                                            Log.w("AssignmentSyncWorker", "Fetched empty marks categories for $code, but cache has data. Retaining cached marks.")
+                                            fetchedMarks.add(cachedCourse)
+                                        } else {
+                                            fetchedMarks.add(CourseMarks(code, name, categories))
+                                        }
+                                    }.onFailure { err ->
+                                        Log.e("AssignmentSyncWorker", "Failed to background-fetch marks for $code: ${err.message}")
+                                        if (cachedCourse != null) {
+                                            Log.i("AssignmentSyncWorker", "Retaining cached marks for $code due to fetch failure.")
+                                            fetchedMarks.add(cachedCourse)
+                                        }
+                                    }
+                                }
+                                if (fetchedMarks.isNotEmpty()) {
+                                    val changes = detectMarksChanges(previousMarksList, fetchedMarks)
+                                    if (changes.isNotEmpty()) {
+                                        MarksNotificationManager.notifyMarksChanges(applicationContext, changes)
+                                    }
+                                    
+                                    val updatedCourseCodes = courses.map { it.trim().uppercase() }.toSet()
+                                    val otherMarks = previousMarksList.filter { cachedMarks ->
+                                        cachedMarks.courseCode.trim().uppercase() !in updatedCourseCodes
+                                    }
+                                    val mergedMarks = otherMarks + fetchedMarks
+                                    MarksCacheStore.saveSnapshot(applicationContext, mergedMarks)
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e("AssignmentSyncWorker", "Failed to sync marks in background: ${e.message}", e)
+                        }
+                    }
+
                     Result.success()
                 }
                 is LoginResult.InvalidCredentials -> Result.failure()

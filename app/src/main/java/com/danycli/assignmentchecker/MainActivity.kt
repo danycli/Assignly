@@ -28,9 +28,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -39,10 +41,16 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.metrics.performance.JankStats
 import com.danycli.assignmentchecker.ui.*
 import com.danycli.assignmentchecker.ui.theme.AssignmentCheckerTheme
+import java.io.ByteArrayOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -226,6 +234,16 @@ fun MainScreen(
     var uploadJob by remember { mutableStateOf<Job?>(null) }
     var instructionFilesDialog by remember { mutableStateOf<InstructionFileDialogState?>(null) }
     var selectedInstructionFile by remember { mutableStateOf<InstructionFile?>(null) }
+    var selectedChallanForDownload by remember { mutableStateOf<FeeChallan?>(null) }
+    var selectedCourse by remember { mutableStateOf<EnrolledCourse?>(null) }
+    var selectedCourseFile by remember { mutableStateOf<CourseFile?>(null) }
+    var pendingDownloadBytes by remember { mutableStateOf<ByteArray?>(null) }
+    var pendingDownloadFileName by remember { mutableStateOf<String?>(null) }
+    var downloadAllProgress by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    var downloadAllCurrentFile by remember { mutableStateOf("") }
+    var pendingZipBytes by remember { mutableStateOf<ByteArray?>(null) }
+    var pendingZipFileName by remember { mutableStateOf<String?>(null) }
+    var downloadAllJob by remember { mutableStateOf<Job?>(null) }
     var pendingCaptchaCredentials by remember { mutableStateOf<Pair<String, String>?>(null) }
     var showCaptchaDialog by remember { mutableStateOf(false) }
     var updateDialogInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
@@ -236,6 +254,19 @@ fun MainScreen(
     var activeDownloads by remember { mutableStateOf<List<QueuedDownload>>(emptyList()) }
     var showTimetableModal by remember { mutableStateOf(false) }
     var timetableError by remember { mutableStateOf<String?>(null) }
+    var attendanceSummaryList by remember { mutableStateOf<List<AttendanceSummary>>(emptyList()) }
+    var isAttendanceRefreshing by remember { mutableStateOf(false) }
+    var gpaSummary by remember { mutableStateOf(GpaSummary(0.0, 0.0, emptyList())) }
+    var isGradesRefreshing by remember { mutableStateOf(false) }
+    var courseMarksMap by remember { mutableStateOf<Map<String, List<MarksCategory>>>(emptyMap()) }
+    var isMarksRefreshing by remember { mutableStateOf(false) }
+    var studentProfile by remember { mutableStateOf<StudentProfile?>(null) }
+    var isProfileRefreshing by remember { mutableStateOf(false) }
+    var feeSnapshot by remember { mutableStateOf<FeeSnapshot?>(null) }
+    var isFeeRefreshing by remember { mutableStateOf(false) }
+    var enrolledCourses by remember { mutableStateOf<List<EnrolledCourse>>(emptyList()) }
+    var enrolledCoursesSemester by remember { mutableStateOf("") }
+    var isEnrolledCoursesRefreshing by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -256,6 +287,14 @@ fun MainScreen(
         currentScreen == ScreenType.SETTINGS -> AppPage.SETTINGS
         currentScreen == ScreenType.DOWNLOADS -> AppPage.DOWNLOADS
         currentScreen == ScreenType.HISTORICAL -> AppPage.HISTORICAL
+        currentScreen == ScreenType.ATTENDANCE -> AppPage.ATTENDANCE
+        currentScreen == ScreenType.GRADES -> AppPage.GRADES
+        currentScreen == ScreenType.MARKS -> AppPage.MARKS
+        currentScreen == ScreenType.PROFILE -> AppPage.PROFILE
+        currentScreen == ScreenType.FEE -> AppPage.FEE
+        currentScreen == ScreenType.ENROLLED_COURSES -> AppPage.ENROLLED_COURSES
+        currentScreen == ScreenType.ASSIGNMENTS -> AppPage.ASSIGNMENTS
+        currentScreen == ScreenType.TIMETABLE -> AppPage.TIMETABLE
         else -> AppPage.PENDING
     }
 
@@ -276,14 +315,218 @@ fun MainScreen(
         if (cachedTimetable != null) {
             timetableLectures = cachedTimetable.lectures
         }
+        val cachedAttendance = AttendanceCacheStore.loadSnapshot(context)
+        if (cachedAttendance != null) {
+            attendanceSummaryList = cachedAttendance.summary
+        }
+        val cachedGrades = GradesCacheStore.loadSnapshot(context)
+        if (cachedGrades != null) {
+            gpaSummary = cachedGrades.summary
+        }
+        val cachedMarks = MarksCacheStore.loadSnapshot(context)
+        if (cachedMarks != null) {
+            courseMarksMap = cachedMarks.courseMarksList.associate { it.courseCode to it.categories }
+        }
+        val cachedProfile = ProfileCacheStore.loadSnapshot(context)
+        if (cachedProfile != null) {
+            studentProfile = cachedProfile.profile
+        }
+        val cachedPhoto = ProfileCacheStore.loadPhoto(context)
+        if (cachedPhoto != null) {
+            loggedInStudentPhoto = cachedPhoto
+        }
+        val cachedFee = FeeCacheStore.loadSnapshot(context)
+        if (cachedFee != null) {
+            feeSnapshot = cachedFee
+        }
+        val cachedEnrolledCourses = EnrolledCoursesCacheStore.loadSnapshot(context)
+        if (cachedEnrolledCourses != null) {
+            enrolledCourses = cachedEnrolledCourses.courses
+            enrolledCoursesSemester = cachedEnrolledCourses.semesterName
+        }
     }
 
-    suspend fun refreshAssignmentsState() {
+    val clearAllUserSessionData = {
+        isLoggedIn = false
+        assignments = emptyList()
+        historicalAssignments = emptyList()
+        timetableLectures = emptyList()
+        attendanceSummaryList = emptyList()
+        gpaSummary = GpaSummary(0.0, 0.0, emptyList())
+        courseMarksMap = emptyMap()
+        loggedInStudentName = null
+        loggedInStudentPhoto = null
+        studentProfile = null
+        feeSnapshot = null
+        enrolledCourses = emptyList()
+        enrolledCoursesSemester = ""
+        welcomeStatusMessage = "Your professors are still thinking how to annoy you in a brutal way possible."
+        attendanceInsightMessage = null
+        currentScreen = ScreenType.PENDING
+
+        CredentialsStore.clear(context)
+        AssignmentCacheStore.clear(context)
+        ProfileCacheStore.clear(context)
+        FeeCacheStore.clear(context)
+        TimetableCacheStore.clear(context)
+        AttendanceCacheStore.clear(context)
+        GradesCacheStore.clear(context)
+        MarksCacheStore.clear(context)
+        EnrolledCoursesCacheStore.clear(context)
+        CourseFilesCacheStore.clear(context)
+        AssignmentNotificationStore.clear(context)
+    }
+
+    suspend fun attemptPortalLoginSilent(usernameInput: String, passwordInput: String): LoginResult {
+        val normalizedUser = usernameInput.trim().uppercase()
+        viewModel.syncWebViewSession(context)
+        val result = try {
+            withTimeout(35_000) {
+                retryIo { viewModel.login(normalizedUser, passwordInput) }
+            }
+        } catch (e: Exception) {
+            LoginResult.Error("Silent login failed: ${e.message}")
+        }
+        if (result is LoginResult.Success) {
+            isLoggedIn = true
+        }
+        return result
+    }
+
+    suspend fun <T> runWithAutoRetry(block: suspend () -> T): T {
+        return try {
+            block()
+        } catch (e: Exception) {
+            val isSessionExpired = e is PortalSystemException && (
+                e.message?.contains("Session expired", ignoreCase = true) == true
+                || e.message?.contains("Not authenticated", ignoreCase = true) == true
+            )
+            if (isSessionExpired) {
+                val savedCreds = withContext(Dispatchers.IO) {
+                    CredentialsStore.get(context)
+                }
+                if (savedCreds != null) {
+                    val (savedUser, savedPass) = savedCreds
+                    val loginResult = attemptPortalLoginSilent(savedUser, savedPass)
+                    if (loginResult is LoginResult.Success) {
+                        block()
+                    } else {
+                        throw e
+                    }
+                } else {
+                    throw e
+                }
+            } else {
+                throw e
+            }
+        }
+    }
+
+    suspend fun syncAttendanceAndDetails(resolvedCodes: Map<String, String>? = null): List<AttendanceSummary> {
+        val fetchedAttendance = runWithAutoRetry { viewModel.loadAttendanceSummary(resolvedCodes) }
+        if (fetchedAttendance.isNotEmpty()) {
+            attendanceSummaryList = fetchedAttendance
+            
+            // Pre-fetch all course details sequentially to avoid ASP.NET session state race conditions
+            val fetchedDetails = mutableListOf<AttendanceDetail>()
+            for (course in fetchedAttendance) {
+                runCatching {
+                    val target = if (course.courseCode.isBlank()) course.courseName else course.courseCode
+                    val details = runWithAutoRetry { viewModel.loadAttendanceDetail(target) }
+                    fetchedDetails.addAll(details)
+                }.onFailure { err ->
+                    Log.e("MainActivity", "Failed to pre-fetch attendance detail for ${course.courseName}: ${err.message}", err)
+                }
+            }
+            
+            val currentCached = AttendanceCacheStore.loadSnapshot(context)
+            val currentDetails = currentCached?.details ?: emptyList()
+            
+            val updatedCourseCodes = fetchedAttendance.map { it.courseCode.trim().uppercase() }.filter { it.isNotEmpty() }.toSet()
+            val updatedCourseNames = fetchedAttendance.map { it.courseName.trim().uppercase().replace("\\s+|-|•|–".toRegex(), "") }.toSet()
+            
+            val otherDetails = currentDetails.filter { cachedDetail ->
+                val cleanCode = cachedDetail.courseCode.trim().uppercase()
+                val cleanName = cachedDetail.courseCode.trim().uppercase().replace("\\s+|-|•|–".toRegex(), "")
+                cleanCode !in updatedCourseCodes && cleanName !in updatedCourseNames
+            }
+            
+            val mergedDetails = otherDetails + fetchedDetails
+            AttendanceCacheStore.saveSnapshot(context, fetchedAttendance, mergedDetails)
+            return fetchedAttendance
+        }
+        return emptyList()
+    }
+
+    suspend fun syncMarks(courseCodes: List<String>, courseNamesMap: Map<String, String>) {
+        if (courseCodes.isEmpty()) return
+        val currentCached = MarksCacheStore.loadSnapshot(context)
+        val currentMarksList = currentCached?.courseMarksList ?: emptyList()
+        val currentMarksMap = currentMarksList.associateBy { it.courseCode.trim().uppercase() }
+
+        val fetchedMarks = mutableListOf<CourseMarks>()
+        for (code in courseCodes) {
+            val cleanCode = code.trim().uppercase()
+            val cachedCourse = currentMarksMap[cleanCode]
+
+            runCatching {
+                val categories = runWithAutoRetry { viewModel.loadMarks(code) }
+                val name = courseNamesMap[code] ?: ""
+                if (categories.isEmpty() && cachedCourse != null && cachedCourse.categories.isNotEmpty()) {
+                    Log.w("MainActivity", "Fetched empty marks categories for $code, but cache has data. Retaining cached marks.")
+                    fetchedMarks.add(cachedCourse)
+                } else {
+                    fetchedMarks.add(CourseMarks(code, name, categories))
+                }
+            }.onFailure { err ->
+                Log.e("MainActivity", "Failed to pre-fetch marks for $code: ${err.message}", err)
+                if (cachedCourse != null) {
+                    Log.i("MainActivity", "Retaining cached marks for $code due to fetch failure.")
+                    fetchedMarks.add(cachedCourse)
+                }
+            }
+        }
+        if (fetchedMarks.isNotEmpty()) {
+            if (appSettings.marksNotificationsEnabled) {
+                val changes = detectMarksChanges(currentMarksList, fetchedMarks)
+                if (changes.isNotEmpty()) {
+                    MarksNotificationManager.notifyMarksChanges(context, changes)
+                }
+            }
+
+            val updatedCourseCodes = courseCodes.map { it.trim().uppercase() }.toSet()
+            val otherMarks = currentMarksList.filter { cachedMarks ->
+                cachedMarks.courseCode.trim().uppercase() !in updatedCourseCodes
+            }
+            
+            val mergedMarks = otherMarks + fetchedMarks
+            MarksCacheStore.saveSnapshot(context, mergedMarks)
+            courseMarksMap = mergedMarks.associate { it.courseCode to it.categories }
+        }
+    }
+
+    suspend fun refreshAssignmentsState() = coroutineScope {
         val previousSnapshot = AssignmentCacheStore.loadSnapshot(context)
-        val dashboardData = viewModel.loadDashboardData()
-        
-        // Only update if we actually got data back from the network
-        if (dashboardData.pendingAssignments.isNotEmpty() || dashboardData.historicalAssignments.isNotEmpty()) {
+
+        // Trigger concurrent parallel fetches for all independent dashboard sections
+        val dashboardDeferred = async { runCatching { runWithAutoRetry { viewModel.loadDashboardData() } }.getOrNull() }
+        val profileDeferred = async { runCatching { runWithAutoRetry { viewModel.loadProfile() } }.getOrNull() }
+        val photoDeferred = async { runCatching { runWithAutoRetry { viewModel.loadPhotoBytes() } }.getOrNull() }
+        val timetableDeferred = async { runCatching { runWithAutoRetry { viewModel.loadTimetable() } }.getOrNull() }
+        val gradesDeferred = async { runCatching { runWithAutoRetry { viewModel.loadGrades() } }.getOrNull() }
+        val feeDeferred = async { runCatching { runWithAutoRetry { viewModel.loadFeeDetails() } }.getOrNull() }
+        val enrolledDeferred = async { runCatching { runWithAutoRetry { viewModel.loadEnrolledCourses() } }.getOrNull() }
+
+        // Await background execution outcomes
+        val dashboardData = dashboardDeferred.await()
+        val fetchedProfile = profileDeferred.await()
+        val fetchedPhoto = photoDeferred.await()
+        val fetchedTimetable = timetableDeferred.await()
+        val fetchedGrades = gradesDeferred.await()
+        val fetchedFee = feeDeferred.await()
+        val fetchedEnrolled = enrolledDeferred.await()
+
+        if (dashboardData != null && (dashboardData.pendingAssignments.isNotEmpty() || dashboardData.historicalAssignments.isNotEmpty())) {
             assignments = dashboardData.pendingAssignments
             historicalAssignments = dashboardData.historicalAssignments
             loggedInStudentName = viewModel.getCurrentStudentName()
@@ -294,6 +537,8 @@ fun MainScreen(
                 previousMessage = welcomeStatusMessage
             )
             attendanceInsightMessage = generateAttendanceSarcasmMessage(dashboardData.weakestAttendanceInsight)
+            dashboardData.profilePhoto?.let { ProfileCacheStore.savePhoto(context, it) }
+            
             AssignmentCacheStore.saveSnapshot(
                 context = context,
                 pendingAssignments = dashboardData.pendingAssignments,
@@ -302,7 +547,50 @@ fun MainScreen(
             )
             lastSyncedMs = System.currentTimeMillis()
         }
-        if (appSettings.assignmentNotificationsEnabled) {
+
+        if (fetchedProfile != null) {
+            studentProfile = fetchedProfile
+            ProfileCacheStore.saveSnapshot(context, fetchedProfile)
+        }
+        if (fetchedPhoto != null) {
+            loggedInStudentPhoto = fetchedPhoto
+            ProfileCacheStore.savePhoto(context, fetchedPhoto)
+        }
+
+        timetableError = null
+        if (fetchedTimetable != null && fetchedTimetable.isNotEmpty()) {
+            timetableLectures = fetchedTimetable
+            TimetableCacheStore.saveSnapshot(context, fetchedTimetable)
+        }
+
+        if (fetchedGrades != null && fetchedGrades.semesters.isNotEmpty()) {
+            gpaSummary = fetchedGrades
+            GradesCacheStore.saveSnapshot(context, fetchedGrades)
+        }
+
+        if (fetchedFee != null) {
+            feeSnapshot = fetchedFee
+            FeeCacheStore.saveSnapshot(context, fetchedFee)
+        }
+
+        if (fetchedEnrolled != null) {
+            enrolledCourses = fetchedEnrolled.courses
+            enrolledCoursesSemester = fetchedEnrolled.semesterName
+            EnrolledCoursesCacheStore.saveSnapshot(context, fetchedEnrolled)
+            
+            fetchedEnrolled.courses.forEach { course ->
+                launch {
+                    try {
+                        val files = viewModel.loadCourseFiles(course.courseCode, course.courseTitle)
+                        CourseFilesCacheStore.saveSnapshot(context, course.courseCode, files)
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "Failed to sync course files for ${course.courseCode} on startup", e)
+                    }
+                }
+            }
+        }
+
+        if (dashboardData != null && appSettings.assignmentNotificationsEnabled) {
             val newAssignments = detectNewAssignments(
                 previous = previousSnapshot,
                 pending = dashboardData.pendingAssignments,
@@ -325,26 +613,23 @@ fun MainScreen(
                 historical = dashboardData.historicalAssignments
             )
         }
-        timetableError = null
-        try {
-            val fetchedTimetable = viewModel.loadTimetable()
-            if (fetchedTimetable.isNotEmpty()) {
-                timetableLectures = fetchedTimetable
-                TimetableCacheStore.saveSnapshot(context, fetchedTimetable)
-            }
-        } catch (e: PortalSystemException) {
-            // Suppress network connectivity errors (e.g. no internet) — cached data is shown
-            val isNetworkError = e.cause is java.net.UnknownHostException
-                    || e.message?.contains("Unable to resolve host") == true
-                    || e.message?.contains("No address associated with hostname") == true
-                    || e.cause is java.net.ConnectException
-                    || e.cause is java.net.SocketTimeoutException
-            if (!isNetworkError) {
-                timetableError = e.message
-            }
-            Log.e("MainActivity", "Timetable fetch failed: ${e.message}")
+
+        // Attendance & Marks sync (depend on grades/attendance lists)
+        val activeAttendance = try {
+            val resolvedCodes = (fetchedGrades ?: GradesCacheStore.loadSnapshot(context)?.summary)?.semesters?.flatMap { it.courses }
+                ?.associate { it.courseName.lowercase().replace("\\s+|-|•|–".toRegex(), "") to it.courseCode }
+            syncAttendanceAndDetails(resolvedCodes)
         } catch (e: Exception) {
-            Log.e("MainActivity", "Timetable fetch unknown error", e)
+            Log.e("MainActivity", "Attendance summary fetch failed: ${e.message}")
+            emptyList()
+        }
+
+        try {
+            val courses = activeAttendance.map { it.courseCode }.ifEmpty { attendanceSummaryList.map { it.courseCode } }
+            val courseNamesMap = activeAttendance.associate { it.courseCode to it.courseName }.ifEmpty { attendanceSummaryList.associate { it.courseCode to it.courseName } }
+            syncMarks(courses, courseNamesMap)
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Marks sync failed: ${e.message}")
         }
     }
 
@@ -392,6 +677,42 @@ fun MainScreen(
             }
 
             AppPage.DOWNLOADS -> {
+                currentScreen = ScreenType.PENDING
+                pendingExitConfirmation = false
+            }
+            AppPage.ATTENDANCE -> {
+                currentScreen = ScreenType.PENDING
+                pendingExitConfirmation = false
+            }
+            AppPage.GRADES -> {
+                currentScreen = ScreenType.PENDING
+                pendingExitConfirmation = false
+            }
+            AppPage.MARKS -> {
+                currentScreen = ScreenType.PENDING
+                pendingExitConfirmation = false
+            }
+            AppPage.PROFILE -> {
+                currentScreen = ScreenType.PENDING
+                pendingExitConfirmation = false
+            }
+            AppPage.FEE -> {
+                currentScreen = ScreenType.PENDING
+                pendingExitConfirmation = false
+            }
+            AppPage.ENROLLED_COURSES -> {
+                if (selectedCourse != null) {
+                    selectedCourse = null
+                } else {
+                    currentScreen = ScreenType.PENDING
+                    pendingExitConfirmation = false
+                }
+            }
+            AppPage.ASSIGNMENTS -> {
+                currentScreen = ScreenType.PENDING
+                pendingExitConfirmation = false
+            }
+            AppPage.TIMETABLE -> {
                 currentScreen = ScreenType.PENDING
                 pendingExitConfirmation = false
             }
@@ -466,24 +787,37 @@ fun MainScreen(
             is LoginResult.Success -> {
                 pendingCaptchaCredentials = null
                 showCaptchaDialog = false
-                try {
-                    refreshAssignmentsState()
-                    isLoggedIn = true
-                    if (saveCredentialsOnSuccess) {
-                        CredentialsStore.save(context, normalizedUser, passwordInput)
-                    }
-                    scope.launch {
-                        checkForAppUpdateIfNeeded()
-                    }
-                } catch (e: PortalSystemException) {
-                    Log.e("MainActivity", "Portal system error: ${e.message}")
-                    if (!isAutoLogin) {
-                        Toast.makeText(context, e.message, Toast.LENGTH_LONG).show()
-                    }
-                } catch (e: Exception) {
-                    Log.e("MainActivity", "Error fetching assignments: ${e.message}", e)
-                    if (!isAutoLogin) {
-                        Toast.makeText(context, "Error loading assignments: ${e.message}", Toast.LENGTH_LONG).show()
+                isLoggedIn = true
+                if (saveCredentialsOnSuccess) {
+                    CredentialsStore.save(context, normalizedUser, passwordInput)
+                }
+                
+                val settings = AppSettingsStore.get(context)
+                if (settings.rememberRegistrationNumber) {
+                    RegistrationHistoryStore.saveRegistration(context, normalizedUser)
+                }
+
+                scope.launch {
+                    checkForAppUpdateIfNeeded()
+                }
+                
+                // Fetch data in background so the user is not blocked on the login screen
+                scope.launch {
+                    isPendingRefreshing = true
+                    try {
+                        refreshAssignmentsState()
+                    } catch (e: PortalSystemException) {
+                        Log.e("MainActivity", "Portal system error on initial data fetch: ${e.message}")
+                        if (!isAutoLogin) {
+                            Toast.makeText(context, e.message, Toast.LENGTH_LONG).show()
+                        }
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "Error fetching initial assignments: ${e.message}", e)
+                        if (!isAutoLogin) {
+                            Toast.makeText(context, "Error loading assignments: ${e.message}", Toast.LENGTH_LONG).show()
+                        }
+                    } finally {
+                        isPendingRefreshing = false
                     }
                 }
             }
@@ -491,8 +825,7 @@ fun MainScreen(
                 pendingCaptchaCredentials = null
                 showCaptchaDialog = false
                 if (isAutoLogin) {
-                    isLoggedIn = false // Session actually invalid
-                    CredentialsStore.clear(context)
+                    clearAllUserSessionData()
                 }
                 Toast.makeText(context, "Authentication failed. Check your ID/password.", Toast.LENGTH_LONG).show()
             }
@@ -525,6 +858,8 @@ fun MainScreen(
                     } else {
                         Toast.makeText(context, mapLoginErrorToMessage(result.message), Toast.LENGTH_LONG).show()
                     }
+                } else {
+                    Toast.makeText(context, "Offline mode. Showing cached data.", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -575,7 +910,108 @@ fun MainScreen(
         }
         selectedInstructionFile = null
     }
-    
+
+    val challanDownloadLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/pdf")
+    ) { uri: android.net.Uri? ->
+        val challan = selectedChallanForDownload
+        if (uri != null && challan != null) {
+            loadingTargetScreen = currentScreen
+            isLoading = true
+            scope.launch {
+                var downloadTimeout = false
+                val result = try {
+                    withTimeout(90_000) {
+                        when (val downloadResult = viewModel.downloadAssignment(challan.downloadLink)) {
+                            is DownloadResult.Success -> {
+                                if (writeBytesToUri(context, uri, downloadResult.bytes)) {
+                                    downloadResult
+                                } else {
+                                    DownloadResult.Error("Could not save downloaded challan.")
+                                }
+                            }
+                            else -> downloadResult
+                        }
+                    }
+                } catch (e: TimeoutCancellationException) {
+                    downloadTimeout = true
+                    DownloadResult.Error("Download timed out.")
+                } catch (e: IOException) {
+                    DownloadResult.NetworkError
+                }
+
+                withContext(Dispatchers.Main) {
+                    val msg = when {
+                        downloadTimeout -> "Server timeout during download."
+                        result is DownloadResult.Success -> "Challan downloaded successfully: ${result.fileName}"
+                        result is DownloadResult.NetworkError -> "Network unavailable. Download could not start."
+                        result is DownloadResult.Rejected -> result.reason
+                        result is DownloadResult.Error -> result.message
+                        else -> "Download failed."
+                    }
+                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                }
+                isLoading = false
+            }
+        }
+        selectedChallanForDownload = null
+    }
+
+    val courseFileDownloadLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("*/*")
+    ) { uri: android.net.Uri? ->
+        val bytes = pendingDownloadBytes
+        val pFileName = pendingDownloadFileName
+        if (uri != null && bytes != null) {
+            loadingTargetScreen = currentScreen
+            isLoading = true
+            scope.launch {
+                val success = withContext(Dispatchers.IO) {
+                    writeBytesToUri(context, uri, bytes)
+                }
+                withContext(Dispatchers.Main) {
+                    val msg = if (success) {
+                        "File downloaded successfully: ${pFileName ?: "document"}"
+                    } else {
+                        "Could not save downloaded file."
+                    }
+                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                }
+                isLoading = false
+            }
+        }
+        pendingDownloadBytes = null
+        pendingDownloadFileName = null
+        selectedCourseFile = null
+    }
+
+    val zipDownloadLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri: android.net.Uri? ->
+        val bytes = pendingZipBytes
+        val pFileName = pendingZipFileName
+        if (uri != null && bytes != null) {
+            loadingTargetScreen = currentScreen
+            isLoading = true
+            scope.launch {
+                val success = withContext(Dispatchers.IO) {
+                    writeBytesToUri(context, uri, bytes)
+                }
+                withContext(Dispatchers.Main) {
+                    val msg = if (success) {
+                        "All files saved successfully to ${pFileName ?: "archive.zip"}"
+                    } else {
+                        "Could not save zip archive."
+                    }
+                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                }
+                isLoading = false
+            }
+        }
+        pendingZipBytes = null
+        pendingZipFileName = null
+    }
+
     // Try auto-login on app startup
     LaunchedEffect(Unit) {
         val savedCreds = if (hasPerformedInitialCredentialCheck) {
@@ -640,17 +1076,12 @@ fun MainScreen(
                         )
                     }
                     AppPage.PENDING -> {
-                        AssignmentsList(
-                            assignments = assignments,
-                            historicalAssignments = historicalAssignments,
+                        DashboardScreen(
                             loggedInStudentName = loggedInStudentName,
                             loggedInStudentPhoto = loggedInStudentPhoto,
-                            welcomeStatusMessage = welcomeStatusMessage,
-                            attendanceInsightMessage = attendanceInsightMessage,
                             isRefreshing = isPendingRefreshing,
-                            onOpenDisclaimer = { uriHandler.openUri(DISCLAIMER_URL) },
                             onRefresh = {
-                                if (isPendingRefreshing) return@AssignmentsList
+                                if (isPendingRefreshing) return@DashboardScreen
                                 loadingTargetScreen = ScreenType.PENDING
                                 isPendingRefreshing = true
                                 isLoading = true
@@ -673,19 +1104,59 @@ fun MainScreen(
                                 isPendingRefreshing = false
                                 isLoading = false
                                 isLoggedIn = false
-                                assignments = emptyList()
-                                historicalAssignments = emptyList()
-                                timetableLectures = emptyList()
-                                loggedInStudentName = null
-                                loggedInStudentPhoto = null
-                                welcomeStatusMessage = "Your professors are still thinking how to annoy you in a brutal way possible."
-                                attendanceInsightMessage = null
+                                clearAllUserSessionData()
+                            },
+                            onOpenSettings = {
+                                currentScreen = ScreenType.SETTINGS
+                            },
+                            onNavigateToTimetable = { currentScreen = ScreenType.TIMETABLE },
+                            onNavigateToAttendance = { currentScreen = ScreenType.ATTENDANCE },
+                            onNavigateToGrades = { currentScreen = ScreenType.GRADES },
+                            onNavigateToMarks = { currentScreen = ScreenType.MARKS },
+                            onNavigateToProfile = { currentScreen = ScreenType.PROFILE },
+                            onNavigateToFee = { currentScreen = ScreenType.FEE },
+                            onNavigateToCourses = { currentScreen = ScreenType.ENROLLED_COURSES },
+                            onNavigateToAssignments = { currentScreen = ScreenType.ASSIGNMENTS },
+                            lastSyncedMs = lastSyncedMs,
+                            studentProfile = studentProfile,
+                            enrolledCourses = enrolledCourses,
+                            enrolledCoursesSemester = enrolledCoursesSemester,
+                            gpaSummary = gpaSummary,
+                            attendanceSummaryList = attendanceSummaryList
+                        )
+                    }
+                    AppPage.TIMETABLE -> {
+                        TimetableScreen(
+                            lectures = timetableLectures,
+                            timetableError = timetableError,
+                            onBack = {
                                 currentScreen = ScreenType.PENDING
-                                CredentialsStore.clear(context)
-                                AssignmentCacheStore.clear(context)
+                            }
+                        )
+                    }
+                    AppPage.ASSIGNMENTS -> {
+                        AssignmentsScreen(
+                            assignments = assignments,
+                            historicalAssignments = historicalAssignments,
+                            isRefreshing = isPendingRefreshing,
+                            onRefresh = {
+                                if (isPendingRefreshing) return@AssignmentsScreen
+                                loadingTargetScreen = ScreenType.ASSIGNMENTS
+                                isPendingRefreshing = true
+                                isLoading = true
+                                scope.launch {
+                                    runCatching { refreshAssignmentsState() }
+                                        .onFailure { e ->
+                                            Log.e("MainActivity", "Refresh failed: ${e.message}", e)
+                                            val msg = if (e is PortalSystemException) e.message else "Refresh failed. Please try again."
+                                            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                        }
+                                    isPendingRefreshing = false
+                                    isLoading = false
+                                }
                             },
                             onDownloadRequested = { assignment ->
-                                loadingTargetScreen = ScreenType.PENDING
+                                loadingTargetScreen = ScreenType.ASSIGNMENTS
                                 isLoading = true
                                 scope.launch {
                                     val result = try {
@@ -715,10 +1186,9 @@ fun MainScreen(
                                 }
                             },
                             onUploadRequested = { assignment, uri ->
-                                loadingTargetScreen = ScreenType.PENDING
+                                loadingTargetScreen = ScreenType.ASSIGNMENTS
                                 isLoading = true
                                 if (appSettings.backgroundUploadEnabled) {
-                                    // Enqueue background upload
                                     UploadWorkScheduler.enqueue(context, assignment.assignmentTitle, assignment.submitLink, uri)
                                     Toast.makeText(context, "Upload queued for background processing", Toast.LENGTH_SHORT).show()
                                     isLoading = false
@@ -765,7 +1235,9 @@ fun MainScreen(
                                     }
                                 }
                             },
-
+                            onNavigateBack = {
+                                currentScreen = ScreenType.PENDING
+                            },
                             onViewTotal = {
                                 historyShowSubmittedOnly = false
                                 currentScreen = ScreenType.HISTORICAL
@@ -812,9 +1284,6 @@ fun MainScreen(
                                     }
                                 }
                             },
-                            onOpenSettings = {
-                                currentScreen = ScreenType.SETTINGS
-                            },
                             activeUploads = activeUploads,
                             onDismissUpload = { upload ->
                                 UploadQueueStore.remove(context, upload.id)
@@ -825,9 +1294,7 @@ fun MainScreen(
                                 DownloadQueueStore.remove(context, download.id)
                                 activeDownloads = activeDownloads.filter { it.id != download.id }
                             },
-                            lastSyncedMs = lastSyncedMs,
-                            timetableLectures = timetableLectures,
-                            onNavigateToTimetable = { showTimetableModal = true }
+                            lastSyncedMs = lastSyncedMs
                         )
                     }
                     AppPage.DOWNLOADS -> {
@@ -958,6 +1425,361 @@ fun MainScreen(
                             lastSyncedMs = lastSyncedMs
                         )
                     }
+                    AppPage.ATTENDANCE -> {
+                        AttendanceScreen(
+                            attendanceSummaryList = attendanceSummaryList,
+                            isRefreshing = isAttendanceRefreshing,
+                            onRefresh = {
+                                if (isAttendanceRefreshing) return@AttendanceScreen
+                                isAttendanceRefreshing = true
+                                scope.launch {
+                                    runCatching {
+                                        val gradesSnapshot = GradesCacheStore.loadSnapshot(context)
+                                        val resolvedCodes = gradesSnapshot?.summary?.semesters?.flatMap { it.courses }
+                                            ?.associate { it.courseName.lowercase().replace("\\s+|-|•|–".toRegex(), "") to it.courseCode }
+                                        syncAttendanceAndDetails(resolvedCodes)
+                                    }.onFailure { e ->
+                                        Log.e("MainActivity", "Attendance refresh failed: ${e.message}", e)
+                                        if (!isNetworkError(e)) {
+                                            val msg = if (e is PortalSystemException) e.message else "Refresh failed. Please try again."
+                                            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                    isAttendanceRefreshing = false
+                                }
+                            },
+                            onLoadDetail = { courseCode ->
+                                try {
+                                    runWithAutoRetry { viewModel.loadAttendanceDetail(courseCode) }.also { details ->
+                                        if (details.isNotEmpty()) {
+                                            val currentCached = AttendanceCacheStore.loadSnapshot(context)
+                                            val currentSummary = currentCached?.summary ?: attendanceSummaryList
+                                            val otherDetails = (currentCached?.details ?: emptyList()).filter { it.courseCode != courseCode }
+                                            val mergedDetails = otherDetails + details
+                                            AttendanceCacheStore.saveSnapshot(context, currentSummary, mergedDetails)
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e("MainActivity", "Failed to fetch attendance details online, loading from cache", e)
+                                    val currentCached = AttendanceCacheStore.loadSnapshot(context)
+                                    val cleanTarget = courseCode.trim().uppercase().replace("\\s+|-|•|–".toRegex(), "")
+                                    val cachedDetails = currentCached?.details?.filter {
+                                        val cleanCode = it.courseCode.trim().uppercase().replace("\\s+|-|•|–".toRegex(), "")
+                                        cleanCode == cleanTarget
+                                    } ?: emptyList()
+                                    
+                                    if (cachedDetails.isEmpty()) {
+                                        throw e
+                                    }
+                                    cachedDetails
+                                }
+                            },
+                            onBack = {
+                                currentScreen = ScreenType.PENDING
+                            }
+                        )
+                    }
+                    AppPage.GRADES -> {
+                        GradesScreen(
+                            gpaSummary = gpaSummary,
+                            isRefreshing = isGradesRefreshing,
+                            onRefresh = {
+                                if (isGradesRefreshing) return@GradesScreen
+                                isGradesRefreshing = true
+                                scope.launch {
+                                    runCatching {
+                                        val fetched = runWithAutoRetry { viewModel.loadGrades() }
+                                        if (fetched.semesters.isNotEmpty()) {
+                                            gpaSummary = fetched
+                                            GradesCacheStore.saveSnapshot(context, fetched)
+                                        }
+                                    }.onFailure { e ->
+                                        Log.e("MainActivity", "Grades refresh failed: ${e.message}", e)
+                                        if (!isNetworkError(e)) {
+                                            val msg = if (e is PortalSystemException) e.message else "Refresh failed. Please try again."
+                                            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                    isGradesRefreshing = false
+                                }
+                            },
+                            onBack = {
+                                currentScreen = ScreenType.PENDING
+                            }
+                        )
+                    }
+                    AppPage.MARKS -> {
+                        val courses = attendanceSummaryList.map { it.courseCode }
+                        val courseNamesMap = attendanceSummaryList.associate { it.courseCode to it.courseName }
+                        MarksScreen(
+                            courseList = courses,
+                            courseNames = courseNamesMap,
+                            courseMarksMap = courseMarksMap,
+                            isRefreshing = isMarksRefreshing,
+                            onRefreshCourse = { courseCode ->
+                                try {
+                                    runWithAutoRetry { viewModel.loadMarks(courseCode) }.also { categories ->
+                                        if (categories.isNotEmpty()) {
+                                            val updatedMap = courseMarksMap + (courseCode to categories)
+                                            courseMarksMap = updatedMap
+                                            val currentCached = MarksCacheStore.loadSnapshot(context)
+                                            val snapshotList = updatedMap.map { entry ->
+                                                val cName = courseNamesMap[entry.key]
+                                                    ?: currentCached?.courseMarksList?.find { it.courseCode == entry.key }?.courseName
+                                                    ?: ""
+                                                CourseMarks(entry.key, cName, entry.value)
+                                            }
+                                            MarksCacheStore.saveSnapshot(context, snapshotList)
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e("MainActivity", "Failed to fetch marks online, loading from cache", e)
+                                    val currentCached = MarksCacheStore.loadSnapshot(context)
+                                    val cleanTarget = courseCode.trim().uppercase().replace("\\s+|-|•|–".toRegex(), "")
+                                    val cachedMarks = currentCached?.courseMarksList?.find {
+                                        val cleanCode = it.courseCode.trim().uppercase().replace("\\s+|-|•|–".toRegex(), "")
+                                        cleanCode == cleanTarget
+                                    }?.categories ?: emptyList()
+
+                                     if (cachedMarks.isEmpty()) {
+                                         if (isNetworkError(e)) {
+                                             throw Exception("Network unavailable. Please check your connection to load marks.")
+                                         }
+                                         throw e
+                                     }
+                                     
+                                     val updatedMap = courseMarksMap + (courseCode to cachedMarks)
+                                     courseMarksMap = updatedMap
+                                     cachedMarks
+                                }
+                            },
+                            onBack = {
+                                currentScreen = ScreenType.PENDING
+                            },
+                            gpaSummary = gpaSummary
+                        )
+                    }
+                    AppPage.PROFILE -> {
+                        ProfileScreen(
+                            profile = studentProfile,
+                            photoBytes = loggedInStudentPhoto,
+                            isRefreshing = isProfileRefreshing,
+                            onRefreshProfile = {
+                                isProfileRefreshing = true
+                                val result = try {
+                                    val prof = runWithAutoRetry { viewModel.loadProfile() }
+                                    val photo = runWithAutoRetry { viewModel.loadPhotoBytes() }
+                                    studentProfile = prof
+                                    ProfileCacheStore.saveSnapshot(context, prof)
+                                    if (photo != null) {
+                                        loggedInStudentPhoto = photo
+                                        ProfileCacheStore.savePhoto(context, photo)
+                                    }
+                                    Pair(prof, photo)
+                                } catch (e: Exception) {
+                                    Log.e("MainActivity", "Failed to refresh profile online", e)
+                                    throw e
+                                } finally {
+                                    isProfileRefreshing = false
+                                }
+                                result
+                            },
+                            onBack = {
+                                currentScreen = ScreenType.PENDING
+                            }
+                        )
+                    }
+                    AppPage.FEE -> {
+                        FeeScreen(
+                            feeSnapshot = feeSnapshot,
+                            isRefreshing = isFeeRefreshing,
+                            onRefreshFee = {
+                                isFeeRefreshing = true
+                                val result = try {
+                                    val snapshot = runWithAutoRetry { viewModel.loadFeeDetails() }
+                                    feeSnapshot = snapshot
+                                    FeeCacheStore.saveSnapshot(context, snapshot)
+                                    snapshot
+                                } catch (e: Exception) {
+                                    Log.e("MainActivity", "Failed to refresh fee online", e)
+                                    throw e
+                                } finally {
+                                    isFeeRefreshing = false
+                                }
+                                result
+                            },
+                            onDownloadChallan = { challan ->
+                                selectedChallanForDownload = challan
+                                val defaultName = "FeeChallan_${challan.semester.replace(" ", "_")}.pdf"
+                                challanDownloadLauncher.launch(defaultName)
+                            },
+                            onBack = {
+                                currentScreen = ScreenType.PENDING
+                            }
+                        )
+                    }
+                    AppPage.ENROLLED_COURSES -> {
+                        val course = selectedCourse
+                        if (course != null) {
+                            CourseDetailScreen(
+                                course = course,
+                                allAssignments = assignments + historicalAssignments,
+                                viewModel = viewModel,
+                                onDownloadFile = { file ->
+                                    selectedCourseFile = file
+                                    loadingTargetScreen = currentScreen
+                                    isLoading = true
+                                    scope.launch {
+                                        var downloadTimeout = false
+                                        val result = try {
+                                            withTimeout(90_000) {
+                                                viewModel.downloadAssignment(file.downloadLink)
+                                            }
+                                        } catch (e: TimeoutCancellationException) {
+                                            downloadTimeout = true
+                                            DownloadResult.Error("Download timed out.")
+                                        } catch (e: IOException) {
+                                            DownloadResult.NetworkError
+                                        }
+
+                                        withContext(Dispatchers.Main) {
+                                            isLoading = false
+                                            when (result) {
+                                                is DownloadResult.Success -> {
+                                                    pendingDownloadBytes = result.bytes
+                                                    pendingDownloadFileName = result.fileName
+                                                    val sanitizedName = result.fileName.replace("[\\\\/:*?\"<>|]".toRegex(), "_")
+                                                    courseFileDownloadLauncher.launch(sanitizedName)
+                                                }
+                                                is DownloadResult.NetworkError -> {
+                                                    Toast.makeText(context, "Network unavailable. Download could not start.", Toast.LENGTH_SHORT).show()
+                                                }
+                                                is DownloadResult.Rejected -> {
+                                                    Toast.makeText(context, result.reason, Toast.LENGTH_SHORT).show()
+                                                }
+                                                is DownloadResult.Error -> {
+                                                    Toast.makeText(context, result.message, Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                onDownloadAllFiles = { files ->
+                                    val job = scope.launch {
+                                        var successCount = 0
+                                        var zipBytesResult: ByteArray? = null
+                                        val baos = ByteArrayOutputStream()
+                                        
+                                        try {
+                                            ZipOutputStream(baos).use { zos ->
+                                                files.forEachIndexed { index, file ->
+                                                    downloadAllCurrentFile = file.title
+                                                    downloadAllProgress = (index + 1) to files.size
+                                                    
+                                                    val downloadResult = try {
+                                                        withTimeout(45_000) {
+                                                            viewModel.downloadAssignment(file.downloadLink)
+                                                        }
+                                                    } catch (e: Exception) {
+                                                        Log.e("MainActivity", "Failed to download during batch: ${file.title}", e)
+                                                        DownloadResult.Error(e.message ?: "Failed to download")
+                                                    }
+                                                    
+                                                    if (downloadResult is DownloadResult.Success) {
+                                                        val name = downloadResult.fileName.ifBlank {
+                                                            val cleanTitle = file.title.replace("[\\\\/:*?\"<>|]".toRegex(), "_")
+                                                            "$cleanTitle.pdf"
+                                                        }
+                                                        val entry = ZipEntry(name)
+                                                        zos.putNextEntry(entry)
+                                                        zos.write(downloadResult.bytes)
+                                                        zos.closeEntry()
+                                                        successCount++
+                                                    }
+                                                }
+                                            }
+                                            zipBytesResult = baos.toByteArray()
+                                        } catch (e: Exception) {
+                                            Log.e("MainActivity", "Error generating zip archive", e)
+                                        } finally {
+                                            downloadAllProgress = null
+                                            downloadAllCurrentFile = ""
+                                            downloadAllJob = null
+                                        }
+                                        
+                                        if (zipBytesResult != null && successCount > 0) {
+                                            pendingZipBytes = zipBytesResult
+                                            val defaultName = "${course.courseCode.replace(" ", "_")}_Course_Files.zip"
+                                            pendingZipFileName = defaultName
+                                            zipDownloadLauncher.launch(defaultName)
+                                        } else {
+                                            Toast.makeText(context, "No course files could be downloaded.", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                    downloadAllJob = job
+                                },
+                                onBack = {
+                                    selectedCourse = null
+                                }
+                            )
+                        } else {
+                            EnrolledCoursesScreen(
+                                courses = enrolledCourses,
+                                semesterName = enrolledCoursesSemester,
+                                isRefreshing = isEnrolledCoursesRefreshing,
+                                onRefresh = {
+                                    isEnrolledCoursesRefreshing = true
+                                    scope.launch {
+                                        withContext(Dispatchers.IO) {
+                                            try {
+                                                for (page in listOf("EnrolledCourses.aspx", "StudentRegistration.aspx", "Summary.aspx")) {
+                                                    val html = viewModel.fetchPageHtmlDebug(page)
+                                                    val file = java.io.File(context.filesDir, "debug_$page.html")
+                                                    file.writeText(html)
+                                                    Log.d("MainActivity", "Dumped $page to ${file.absolutePath}, length: ${html.length}")
+                                                }
+                                            } catch (e: Exception) {
+                                                Log.e("MainActivity", "Failed to dump pages", e)
+                                            }
+                                        }
+                                        try {
+                                            val data = runWithAutoRetry { viewModel.loadEnrolledCourses() }
+                                            enrolledCourses = data.courses
+                                            enrolledCoursesSemester = data.semesterName
+                                            EnrolledCoursesCacheStore.saveSnapshot(context, data)
+                                            
+                                            data.courses.forEach { course ->
+                                                scope.launch {
+                                                    try {
+                                                        val files = viewModel.loadCourseFiles(course.courseCode, course.courseTitle)
+                                                        CourseFilesCacheStore.saveSnapshot(context, course.courseCode, files)
+                                                    } catch (e: Exception) {
+                                                        Log.e("MainActivity", "Failed to sync course files for ${course.courseCode} on manual refresh", e)
+                                                    }
+                                                }
+                                            }
+                                        } catch (e: Exception) {
+                                            Log.e("MainActivity", "Failed to fetch enrolled courses", e)
+                                            val msg = when {
+                                                isNetworkError(e) -> "Network unavailable. Please check your connection."
+                                                e.message?.contains("No enrolled courses found for the current semester") == true -> "No enrolled courses found for the current semester."
+                                                else -> e.message ?: "Failed to fetch enrolled courses"
+                                            }
+                                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                        } finally {
+                                            isEnrolledCoursesRefreshing = false
+                                        }
+                                    }
+                                },
+                                onCourseClick = { clickedCourse ->
+                                    selectedCourse = clickedCourse
+                                },
+                                onBack = {
+                                    currentScreen = ScreenType.PENDING
+                                }
+                            )
+                        }
+                    }
                 }
             }
 
@@ -1014,20 +1836,6 @@ fun MainScreen(
             }
 
 
-        }
-    }
-
-    if (showTimetableModal) {
-        ModalBottomSheet(
-            onDismissRequest = { showTimetableModal = false },
-            containerColor = MaterialTheme.colorScheme.background,
-            dragHandle = { BottomSheetDefaults.DragHandle() }
-        ) {
-            TimetableBottomSheetContent(
-                lectures = timetableLectures,
-                timetableError = timetableError,
-                onClose = { showTimetableModal = false }
-            )
         }
     }
 
@@ -1185,5 +1993,80 @@ fun MainScreen(
                 }
             }
         )
+    }
+
+    val progressState = downloadAllProgress
+    if (progressState != null) {
+        Dialog(
+            onDismissRequest = {
+                downloadAllJob?.cancel()
+                downloadAllProgress = null
+                downloadAllJob = null
+            },
+            properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false)
+        ) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
+                    .shadow(8.dp, shape = RoundedCornerShape(28.dp)),
+                shape = RoundedCornerShape(28.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Text(
+                        text = "Downloading Course Files",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    
+                    CircularProgressIndicator(
+                        progress = { progressState.first.toFloat() / progressState.second.toFloat() },
+                        color = MaterialTheme.colorScheme.primary,
+                        strokeWidth = 4.dp,
+                        modifier = Modifier.size(64.dp)
+                    )
+                    
+                    Text(
+                        text = "Downloading ${progressState.first} of ${progressState.second}...",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    
+                    if (downloadAllCurrentFile.isNotBlank()) {
+                        Text(
+                            text = downloadAllCurrentFile,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    
+                    TextButton(
+                        onClick = {
+                            downloadAllJob?.cancel()
+                            downloadAllProgress = null
+                            downloadAllJob = null
+                        },
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Cancel", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
     }
 }

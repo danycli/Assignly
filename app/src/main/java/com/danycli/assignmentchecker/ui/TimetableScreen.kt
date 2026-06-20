@@ -26,10 +26,10 @@ import kotlin.math.abs
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TimetableBottomSheetContent(
+fun TimetableScreen(
     lectures: List<TimetableLecture>,
     timetableError: String?,
-    onClose: () -> Unit
+    onBack: () -> Unit
 ) {
     val currentDayOfWeek = remember { 
         LocalDate.now().dayOfWeek.name.lowercase().replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() } 
@@ -64,122 +64,138 @@ fun TimetableBottomSheetContent(
         lectures.groupBy { it.day.lowercase() }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .fillMaxHeight(0.85f)
-    ) {
-        // HEADER
-        Row(
+    Scaffold(
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = { Text("Timetable", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary) },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = MaterialTheme.colorScheme.primary),
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close",
+                            tint = MaterialTheme.colorScheme.onPrimary
+                        )
+                    }
+                }
+            )
+        },
+        containerColor = MaterialTheme.colorScheme.background
+    ) { paddingValues ->
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .fillMaxSize()
+                .padding(paddingValues)
         ) {
-            Column {
-                Text(
-                    text = "📅 $selectedDay",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = "${groupedLectures[selectedDay.lowercase()]?.size ?: 0} Classes Today",
-                    fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontWeight = FontWeight.Medium
-                )
-            }
-            IconButton(onClick = onClose) {
-                Icon(Icons.Default.Close, contentDescription = "Close Planner")
-            }
-        }
-
-        if (!timetableError.isNullOrBlank()) {
-            Card(
+            // HEADER
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error)
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text(text = timetableError, color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 14.sp)
+                Column {
+                    Text(
+                        text = "📅 $selectedDay",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "${groupedLectures[selectedDay.lowercase()]?.size ?: 0} Classes Today",
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.Medium
+                    )
                 }
             }
-        }
 
-        // STATIC DAY SELECTOR (Pill style)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            daysOfWeek.forEach { day ->
-                val isSelected = selectedDay == day
-                val shortDay = day.take(3)
-                
-                FilterChip(
-                    selected = isSelected,
-                    onClick = { selectedDay = day },
-                    label = { Text(shortDay, fontWeight = FontWeight.Bold) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = MaterialTheme.colorScheme.primary,
-                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary
-                    ),
-                    shape = RoundedCornerShape(16.dp)
-                )
-            }
-        }
-
-        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-
-        HorizontalPager(
-            state = pagerState,
-            modifier = Modifier.fillMaxSize()
-        ) { page ->
-            val pageDay = daysOfWeek[page]
-            val pageLectures = groupedLectures[pageDay.lowercase()] ?: emptyList()
-            
-            if (pageLectures.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("🎉", fontSize = 48.sp)
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("No classes scheduled", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("Enjoy your free day.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+            if (!timetableError.isNullOrBlank()) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                ) {
+                    Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(text = timetableError, color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 14.sp)
                     }
                 }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    // NEXT CLASS SECTION
-                    if (pageDay == currentDayOfWeek) {
-                        val nextClass = pageLectures.firstOrNull { isClassUpcomingOrOngoing(it.startTime, it.endTime) }
-                        if (nextClass != null) {
-                            item {
-                                NextClassWidget(nextClass)
-                                Spacer(modifier = Modifier.height(8.dp))
-                            }
+            }
+
+            // STATIC DAY SELECTOR (Pill style)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                daysOfWeek.forEach { day ->
+                    val isSelected = selectedDay == day
+                    val shortDay = day.take(3)
+                    
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = { selectedDay = day },
+                        label = { Text(shortDay, fontWeight = FontWeight.Bold) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primary,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                        ),
+                        shape = RoundedCornerShape(16.dp)
+                    )
+                }
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize()
+            ) { page ->
+                val pageDay = daysOfWeek[page]
+                val pageLectures = groupedLectures[pageDay.lowercase()] ?: emptyList()
+                
+                if (pageLectures.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("🎉", fontSize = 48.sp)
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text("No classes scheduled", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("Enjoy your free day.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
                         }
                     }
-                    
-                    items(
-                        items = pageLectures,
-                        key = { it.id }
-                    ) { lecture ->
-                        CompactTimetableCard(
-                            lecture = lecture, 
-                            isToday = pageDay == currentDayOfWeek
-                        )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        // NEXT CLASS SECTION
+                        if (pageDay == currentDayOfWeek) {
+                            val nextClass = pageLectures.firstOrNull { isClassUpcomingOrOngoing(it.startTime, it.endTime) }
+                            if (nextClass != null) {
+                                item {
+                                    NextClassWidget(nextClass)
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                }
+                            }
+                        }
+                        
+                        items(
+                            items = pageLectures,
+                            key = { it.id }
+                        ) { lecture ->
+                            CompactTimetableCard(
+                                lecture = lecture, 
+                                isToday = pageDay == currentDayOfWeek
+                            )
+                        }
                     }
                 }
             }

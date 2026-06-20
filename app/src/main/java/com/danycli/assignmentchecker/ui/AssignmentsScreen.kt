@@ -36,10 +36,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.filled.School
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.Payments
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Assignment
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
@@ -77,24 +88,224 @@ import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AssignmentsList(
-    assignments: List<Assignment>,
-    historicalAssignments: List<Assignment>,
+fun DashboardScreen(
     loggedInStudentName: String?,
     loggedInStudentPhoto: ByteArray?,
-    welcomeStatusMessage: String,
-    attendanceInsightMessage: String?,
     isRefreshing: Boolean,
-    onOpenDisclaimer: () -> Unit,
     onRefresh: () -> Unit,
     onLogout: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onNavigateToTimetable: () -> Unit = {},
+    onNavigateToAttendance: () -> Unit = {},
+    onNavigateToGrades: () -> Unit = {},
+    onNavigateToMarks: () -> Unit = {},
+    onNavigateToProfile: () -> Unit = {},
+    onNavigateToFee: () -> Unit = {},
+    onNavigateToCourses: () -> Unit = {},
+    onNavigateToAssignments: () -> Unit = {},
+    lastSyncedMs: Long = 0L,
+    studentProfile: StudentProfile? = null,
+    enrolledCourses: List<EnrolledCourse> = emptyList(),
+    enrolledCoursesSemester: String = "",
+    gpaSummary: GpaSummary = GpaSummary(0.0, 0.0, emptyList()),
+    attendanceSummaryList: List<AttendanceSummary> = emptyList()
+) {
+    val context = LocalContext.current
+
+    val profileBitmap = remember(loggedInStudentPhoto) {
+        loggedInStudentPhoto?.let { bytes ->
+            runCatching { android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }.getOrNull()
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = { 
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            "Assignly Portal",
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (!loggedInStudentName.isNullOrBlank()) {
+                            Text(
+                                "Logged in: $loggedInStudentName",
+                                color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f),
+                                fontSize = 11.sp,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = MaterialTheme.colorScheme.primary),
+                actions = {
+                    IconButton(onClick = onRefresh) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = MaterialTheme.colorScheme.onPrimary)
+                    }
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings", tint = MaterialTheme.colorScheme.onPrimary)
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = onLogout) {
+                        Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Logout", tint = MaterialTheme.colorScheme.onPrimary)
+                    }
+                }
+            )
+        },
+        containerColor = MaterialTheme.colorScheme.background
+    ) { padding ->
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = onRefresh,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("dashboard_screen"),
+                contentPadding = PaddingValues(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // 1. Student Identity Card
+                item {
+                    StudentIdentityCard(
+                        profile = studentProfile,
+                        loggedInStudentName = loggedInStudentName,
+                        profileBitmap = profileBitmap,
+                        enrolledCoursesSemester = enrolledCoursesSemester,
+                        onNavigateToProfile = onNavigateToProfile
+                    )
+                }
+
+                // 2. Academic Snapshot Section
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        val cgpaStr = if (gpaSummary.cgpa > 0.0) String.format(Locale.US, "%.2f", gpaSummary.cgpa) else "N/A"
+                        
+                        val avgAttendance = if (attendanceSummaryList.isNotEmpty()) {
+                            attendanceSummaryList.map { it.percentage }.average()
+                        } else {
+                            0.0
+                        }
+                        val attendanceStr = if (attendanceSummaryList.isNotEmpty()) {
+                            String.format(Locale.US, "%.0f%%", avgAttendance)
+                        } else {
+                            "N/A"
+                        }
+                        
+                        val coursesStr = if (enrolledCourses.isNotEmpty()) "${enrolledCourses.size} Courses" else "N/A"
+                        
+                        val totalCredits = enrolledCourses.sumOf { parseCreditHoursValue(it.creditHours) }
+                        val creditsStr = if (enrolledCourses.isNotEmpty()) formatCreditHours(totalCredits) else "N/A"
+
+                        SnapshotCard("CGPA", cgpaStr, Modifier.weight(1f))
+                        SnapshotCard("Attendance", attendanceStr, Modifier.weight(1f))
+                        SnapshotCard("Registered", coursesStr, Modifier.weight(1f))
+                        SnapshotCard("Credits", creditsStr, Modifier.weight(1f))
+                    }
+                }
+
+
+
+                // 4. Academic Services Shortcuts
+                item {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Academic Services",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                        )
+                        
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            ShortcutCard("Timetable", Icons.Default.CalendarMonth, onNavigateToTimetable, Modifier.weight(1f))
+                            ShortcutCard("Attendance", Icons.Default.Analytics, onNavigateToAttendance, Modifier.weight(1f))
+                            ShortcutCard("Grades", Icons.Default.School, onNavigateToGrades, Modifier.weight(1f))
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            ShortcutCard("Marks", Icons.Default.Description, onNavigateToMarks, Modifier.weight(1f))
+                            ShortcutCard("Courses", Icons.Default.MenuBook, onNavigateToCourses, Modifier.weight(1f))
+                            ShortcutCard("Fee", Icons.Default.Payments, onNavigateToFee, Modifier.weight(1f))
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            ShortcutCard("Assignments", Icons.Default.Assignment, onNavigateToAssignments, Modifier.weight(1f))
+                            Spacer(modifier = Modifier.weight(1f))
+                            Spacer(modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+
+                // 5. Footer (Last synced + disclaimer)
+                item {
+                    val relativeSyncTime = remember(lastSyncedMs, isRefreshing) {
+                        if (lastSyncedMs <= 0L) "Never" 
+                        else android.text.format.DateUtils.getRelativeTimeSpanString(
+                            lastSyncedMs, 
+                            System.currentTimeMillis(), 
+                            android.text.format.DateUtils.MINUTE_IN_MILLIS
+                        ).toString()
+                    }
+                    
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 16.dp, bottom = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "Last synced: $relativeSyncTime",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f),
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            text = "Data synced from COMSATS Student Information System.",
+                            fontSize = 9.sp,
+                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AssignmentsScreen(
+    assignments: List<Assignment>,
+    historicalAssignments: List<Assignment>,
+    isRefreshing: Boolean,
+    onRefresh: () -> Unit,
     onDownloadRequested: (Assignment) -> Unit,
     onUploadRequested: (Assignment, Uri) -> Unit,
+    onNavigateBack: () -> Unit,
     onViewTotal: () -> Unit,
     onViewSubmitted: () -> Unit,
-    onOpenSettings: () -> Unit,
-    timetableLectures: List<TimetableLecture> = emptyList(),
-    onNavigateToTimetable: () -> Unit = {},
     activeUploads: List<QueuedUpload> = emptyList(),
     onDismissUpload: (QueuedUpload) -> Unit = {},
     activeDownloads: List<QueuedDownload> = emptyList(),
@@ -136,44 +347,20 @@ fun AssignmentsList(
         }
     }
 
-    val profileBitmap = remember(loggedInStudentPhoto) {
-        loggedInStudentPhoto?.let { bytes ->
-            runCatching { android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }.getOrNull()
-        }
-    }
-
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
                 title = { 
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            "My Assignments",
-                            color = MaterialTheme.colorScheme.onPrimary,
-                            fontWeight = FontWeight.Bold
-                        )
-                        if (!loggedInStudentName.isNullOrBlank()) {
-                            Text(
-                                "Logged in: $loggedInStudentName",
-                                color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f),
-                                fontSize = 11.sp,
-                                maxLines = 1
-                            )
-                        }
-                    }
+                    Text(
+                        "Assignments",
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = MaterialTheme.colorScheme.primary),
-                actions = {
-                    IconButton(onClick = onRefresh) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = MaterialTheme.colorScheme.onPrimary)
-                    }
-                    IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings", tint = MaterialTheme.colorScheme.onPrimary)
-                    }
-                },
                 navigationIcon = {
-                    IconButton(onClick = onLogout) {
-                        Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Logout", tint = MaterialTheme.colorScheme.onPrimary)
+                    IconButton(onClick = onNavigateBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.onPrimary)
                     }
                 }
             )
@@ -199,29 +386,73 @@ fun AssignmentsList(
                 contentPadding = PaddingValues(12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                // 1. Assignment Summary Card
                 item {
-                    StudentWelcomeCard(
-                        studentName = loggedInStudentName,
-                        profileBitmap = profileBitmap,
-                        statusMessage = welcomeStatusMessage,
-                        attendanceInsightMessage = attendanceInsightMessage
-                    )
-                }
-
-                item {
-                    OutlinedButton(
-                        onClick = onNavigateToTimetable,
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            containerColor = MaterialTheme.colorScheme.surface,
-                            contentColor = MaterialTheme.colorScheme.primary
-                        )
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .shadow(2.dp, shape = RoundedCornerShape(16.dp)),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                     ) {
-                        Text("View Timetable", fontWeight = FontWeight.Bold)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp)
+                        ) {
+                            Text(
+                                "Assignments Summary",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                val pendingCount = assignments.count { it.status == AssignmentStatus.PENDING }
+                                val submittedCount = countSuccessfulSubmissions(historicalAssignments)
+                                val totalCount = assignments.size + historicalAssignments.size
+
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable { onViewTotal() }
+                                        .padding(vertical = 4.dp)
+                                ) {
+                                    Text("$totalCount", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
+                                    Text("Total", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(vertical = 4.dp)
+                                ) {
+                                    Text("$pendingCount", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = if (isSystemInDarkTheme()) Color(0xFFFBC02D) else Color(0xFFD4AF37))
+                                    Text("Pending", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable { onViewSubmitted() }
+                                        .padding(vertical = 4.dp)
+                                ) {
+                                    Text("$submittedCount", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = if (isSystemInDarkTheme()) Color(0xFF81C784) else Color(0xFF2E7D32))
+                                    Text("Submitted", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
                     }
                 }
 
+                // Active background tasks
                 if (activeUploads.isNotEmpty()) {
                     items(
                         items = activeUploads,
@@ -246,250 +477,121 @@ fun AssignmentsList(
                     }
                 }
 
-                if (assignments.isEmpty() && historicalAssignments.isEmpty()) {
+                // 2. Search and Filters Section
+                item {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // Clean Search Box
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                    shape = RoundedCornerShape(24.dp)
+                                )
+                                .border(
+                                    width = 1.dp,
+                                    color = if (searchFocused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                                    shape = RoundedCornerShape(24.dp)
+                                )
+                                .padding(horizontal = 14.dp, vertical = 12.dp)
+                        ) {
+                            BasicTextField(
+                                value = searchQuery,
+                                onValueChange = { searchQuery = it },
+                                singleLine = true,
+                                textStyle = LocalTextStyle.current.copy(
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    fontSize = 14.sp
+                                ),
+                                cursorBrush = SolidColor(MaterialTheme.colorScheme.onSurface),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .onFocusChanged { searchFocused = it.isFocused },
+                                decorationBox = { innerTextField ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Search,
+                                            contentDescription = "Search",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Box(
+                                            modifier = Modifier.weight(1f),
+                                            contentAlignment = Alignment.CenterStart
+                                        ) {
+                                            if (searchQuery.isBlank()) {
+                                                Text(
+                                                    text = "Search by subject or assignment",
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                                    fontSize = 13.sp,
+                                                    maxLines = 1
+                                                )
+                                            }
+                                            innerTextField()
+                                        }
+                                    }
+                                }
+                            )
+                        }
+
+                        // Filter Chips Row
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            PendingDueFilter.values().forEach { option ->
+                                val label = when (option) {
+                                    PendingDueFilter.ALL -> "Any Due"
+                                    PendingDueFilter.TODAY -> "Due Today"
+                                    PendingDueFilter.NEXT_3_DAYS -> "Next 3 Days"
+                                    PendingDueFilter.NEXT_7_DAYS -> "Next 7 Days"
+                                }
+                                val selected = dueFilter == option
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = { dueFilter = option },
+                                    label = { Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                        selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                        labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                    ),
+                                    border = null,
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 3. Assignments list items
+                if (filteredAssignments.isEmpty()) {
                     item {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 56.dp),
+                                .padding(vertical = 24.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                "No assignments yet",
-                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f),
-                                fontSize = 15.sp
+                                text = if (assignments.isEmpty()) "No pending assignments" else "No assignments match filters",
+                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold
                             )
                         }
                     }
                 } else {
-                    item {
-                        val relativeSyncTime = remember(lastSyncedMs, isRefreshing) {
-                            if (lastSyncedMs <= 0L) "Never" 
-                            else android.text.format.DateUtils.getRelativeTimeSpanString(
-                                lastSyncedMs, 
-                                System.currentTimeMillis(), 
-                                android.text.format.DateUtils.MINUTE_IN_MILLIS
-                            ).toString()
-                        }
-                        val isStale = lastSyncedMs > 0 && (System.currentTimeMillis() - lastSyncedMs > 24 * 3600 * 1000L)
-
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 4.dp, vertical = 2.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.End
-                        ) {
-                            if (isStale) {
-                                Icon(
-                                    imageVector = Icons.Default.Warning,
-                                    contentDescription = "Stale data",
-                                    tint = if (isSystemInDarkTheme()) Color(0xFFFBC02D) else Color(0xFFFBC02D),
-                                    modifier = Modifier.size(12.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                            }
-                            Text(
-                                text = "Last updated: $relativeSyncTime",
-                                fontSize = 10.sp,
-                                color = if (isStale) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
-                                fontWeight = if (isStale) FontWeight.Bold else FontWeight.Normal
-                            )
-                        }
-                    }
-
-                    // Assignment Summary Card
-                    item {
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .shadow(4.dp, shape = RoundedCornerShape(12.dp)),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary)
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp)
-                            ) {
-                                Text(
-                                    "Assignment Summary",
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onPrimary,
-                                    modifier = Modifier.padding(bottom = 12.dp)
-                                )
-
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    val pendingAssignmentsCount = assignments.count { it.status == AssignmentStatus.PENDING }
-                                    val submittedAssignmentsCount = countSuccessfulSubmissions(historicalAssignments)
-                                    val totalAssignmentsCount = assignments.size + historicalAssignments.size
-
-                                    Column(
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .clip(RoundedCornerShape(10.dp))
-                                            .clickable { onViewTotal() }
-                                            .padding(vertical = 4.dp)
-                                    ) {
-                                        Text("$totalAssignmentsCount", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary)
-                                        Text("Total", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f))
-                                    }
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
-                                        Text("$pendingAssignmentsCount", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = if (isSystemInDarkTheme()) Color(0xFFFFE082) else Color(0xFFFFD700))
-                                        Text("Pending", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f))
-                                    }
-                                    Column(
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .clip(RoundedCornerShape(10.dp))
-                                            .clickable { onViewSubmitted() }
-                                            .padding(vertical = 4.dp)
-                                    ) {
-                                        Text("$submittedAssignmentsCount", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = if (isSystemInDarkTheme()) Color(0xFFA5D6A7) else Color(0xFF4CAF50))
-                                        Text("Submitted", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f))
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    item {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(12.dp),
-                                verticalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                // Search Bar
-                                val isDark = isSystemInDarkTheme()
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .shadow(
-                                            elevation = 2.dp,
-                                            shape = RoundedCornerShape(50.dp),
-                                            ambientColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
-                                            spotColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
-                                        )
-                                        .background(
-                                            color = MaterialTheme.colorScheme.surfaceVariant,
-                                            shape = RoundedCornerShape(50.dp)
-                                        )
-                                        .border(
-                                            width = 1.2.dp,
-                                            color = if (searchFocused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.36f),
-                                            shape = RoundedCornerShape(50.dp)
-                                        )
-                                        .padding(horizontal = 15.dp, vertical = 18.dp)
-                                ) {
-                                    BasicTextField(
-                                        value = searchQuery,
-                                        onValueChange = { searchQuery = it },
-                                        singleLine = true,
-                                        textStyle = LocalTextStyle.current.copy(
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                            fontSize = 14.sp,
-                                            textAlign = TextAlign.Start
-                                        ),
-                                        cursorBrush = SolidColor(MaterialTheme.colorScheme.onSurface),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .onFocusChanged { searchFocused = it.isFocused },
-                                        decorationBox = { innerTextField ->
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Search,
-                                                    contentDescription = "Search",
-                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                                Spacer(modifier = Modifier.width(10.dp))
-                                                Box(
-                                                    modifier = Modifier.weight(1f),
-                                                    contentAlignment = Alignment.CenterStart
-                                                ) {
-                                                    if (searchQuery.isBlank()) {
-                                                        Text(
-                                                            text = "Search by subject or assignment",
-                                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                                            fontSize = 12.sp,
-                                                            textAlign = TextAlign.Start,
-                                                            maxLines = 1
-                                                        )
-                                                    }
-                                                    innerTextField()
-                                                }
-                                            }
-                                        }
-                                    )
-                                }
-
-                                Text("Due date filter", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .horizontalScroll(rememberScrollState()),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    PendingDueFilter.values().forEach { option ->
-                                        val label = when (option) {
-                                            PendingDueFilter.ALL -> "Any"
-                                            PendingDueFilter.TODAY -> "Today"
-                                            PendingDueFilter.NEXT_3_DAYS -> "Next 3 days"
-                                            PendingDueFilter.NEXT_7_DAYS -> "Next 7 days"
-                                        }
-                                        AssistChip(
-                                            onClick = { dueFilter = option },
-                                            label = { Text(label) },
-                                            colors = AssistChipDefaults.assistChipColors(
-                                                containerColor = if (dueFilter == option) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant,
-                                                labelColor = if (dueFilter == option) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    item {
-                        if (filteredAssignments.isEmpty()) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 16.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = if (assignments.isEmpty()) "No pending assignments" else "No assignments match filters",
-                                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.75f),
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                        } else {
-                            Text(
-                                text = "Pending Assignments",
-                                color = MaterialTheme.colorScheme.primary,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 4.dp)
-                            )
-                        }
-                    }
-
                     itemsIndexed(
                         items = filteredAssignments,
                         key = { index, assignment ->
@@ -511,15 +613,43 @@ fun AssignmentsList(
                         )
                     }
                 }
+
+                // 4. Footer (Last synced + disclaimer)
                 item {
-                    Spacer(modifier = Modifier.height(10.dp))
-                    DisclaimerFooter(onOpenDisclaimer = onOpenDisclaimer)
+                    val relativeSyncTime = remember(lastSyncedMs, isRefreshing) {
+                        if (lastSyncedMs <= 0L) "Never" 
+                        else android.text.format.DateUtils.getRelativeTimeSpanString(
+                            lastSyncedMs, 
+                            System.currentTimeMillis(), 
+                            android.text.format.DateUtils.MINUTE_IN_MILLIS
+                        ).toString()
+                    }
+                    
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 16.dp, bottom = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "Last synced: $relativeSyncTime",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f),
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            text = "Data synced from COMSATS Student Information System.",
+                            fontSize = 9.sp,
+                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f),
+                            textAlign = TextAlign.Center
+                        )
+                    }
                 }
             }
         }
     }
 }
-
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -656,75 +786,60 @@ fun PendingAssignmentRow(
     }
 }
 
+data class RecentActivity(
+    val title: String,
+    val description: String,
+    val relativeTime: String,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val epochMs: Long
+)
+
 @Composable
-fun StudentWelcomeCard(
-    studentName: String?,
+fun StudentIdentityCard(
+    profile: StudentProfile?,
+    loggedInStudentName: String?,
     profileBitmap: Bitmap?,
-    statusMessage: String,
-    attendanceInsightMessage: String?
+    enrolledCoursesSemester: String,
+    onNavigateToProfile: () -> Unit
 ) {
-    val resolvedName = studentName?.takeIf { it.isNotBlank() } ?: "Student"
+    val resolvedName = profile?.name?.takeIf { it.isNotBlank() } ?: loggedInStudentName?.takeIf { it.isNotBlank() } ?: "Student"
+    val resolvedReg = profile?.regNumber?.takeIf { it.isNotBlank() } ?: "CIIT/SP25-BCS-136/ATD"
+    val resolvedProgram = profile?.program?.takeIf { it.isNotBlank() } ?: "BS Computer Science"
+    val resolvedSection = profile?.section?.takeIf { it.isNotBlank() } ?: "Section C"
+    val resolvedCampus = profile?.campus?.takeIf { it.isNotBlank() } ?: "Abbottabad Campus"
     val isDark = isSystemInDarkTheme()
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .shadow(2.dp, shape = RoundedCornerShape(20.dp)),
+            .shadow(4.dp, shape = RoundedCornerShape(20.dp))
+            .clickable { onNavigateToProfile() },
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(
                     Brush.horizontalGradient(
-                        colors = listOf(
-                            MaterialTheme.colorScheme.surfaceVariant,
-                            MaterialTheme.colorScheme.surface
-                        )
+                        colors = if (isDark) {
+                            listOf(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.surface)
+                        } else {
+                            listOf(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f), MaterialTheme.colorScheme.surface)
+                        }
                     )
                 )
-                .padding(horizontal = 16.dp, vertical = 14.dp)
+                .padding(16.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(3.dp)
-                ) {
-                    Text(
-                        text = "Whats up",
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Text(
-                        text = resolvedName,
-                        fontSize = 19.sp,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontWeight = FontWeight.ExtraBold,
-                        maxLines = 2
-                    )
-                    Text(
-                        text = statusMessage,
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    if (!attendanceInsightMessage.isNullOrBlank()) {
-                        Text(
-                            text = attendanceInsightMessage,
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.error,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                }
-
+                // Profile Photo
                 Box(
                     modifier = Modifier
-                        .size(76.dp)
+                        .size(80.dp)
                         .clip(CircleShape)
                         .background(MaterialTheme.colorScheme.surface)
                         .border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f), CircleShape),
@@ -744,6 +859,234 @@ fun StudentWelcomeCard(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(12.dp)
+                        )
+                    }
+                }
+
+                // Student Details
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = resolvedName,
+                        fontSize = 18.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.ExtraBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = resolvedReg,
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "$resolvedProgram • $resolvedSection",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = resolvedCampus,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    
+                    Spacer(modifier = Modifier.height(6.dp))
+                    
+                    // Chips Row
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val hasScholarship = profile?.scholarshipStatus?.let { status ->
+                            val s = status.trim().lowercase()
+                            s.isNotBlank() && s != "none" && s != "no" && s != "n/a" && 
+                            !s.contains("no scholarship") && !s.contains("no active") &&
+                            (s.contains("yes") || s.contains("active") || s.contains("holder") || s.contains("eligible") || s.contains("approved"))
+                        } == true
+                        
+                        if (hasScholarship) {
+                            Surface(
+                                shape = RoundedCornerShape(50.dp),
+                                color = if (isDark) Color(0xFF004D40) else Color(0xFFE0F2F1),
+                                modifier = Modifier.border(0.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f), RoundedCornerShape(50.dp))
+                            ) {
+                                Text(
+                                    text = "Scholarship Holder",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isDark) Color(0xFF80CBC4) else Color(0xFF004D40),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                        
+                        val semesterLabel = enrolledCoursesSemester.ifBlank { "Current Semester" }
+                        Surface(
+                            shape = RoundedCornerShape(50.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.border(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f), RoundedCornerShape(50.dp))
+                        ) {
+                            Text(
+                                text = semesterLabel,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ShortcutCard(
+    title: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        onClick = onClick,
+        modifier = modifier
+            .aspectRatio(1.45f)
+            .shadow(2.dp, shape = RoundedCornerShape(16.dp)),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(8.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = title,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(26.dp)
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = title,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+fun SnapshotCard(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .shadow(2.dp, shape = RoundedCornerShape(12.dp)),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 10.dp, horizontal = 4.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = label,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = value,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = MaterialTheme.colorScheme.primary,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
+fun QuickAccessRow(
+    onNavigateToProfile: () -> Unit,
+    onNavigateToTimetable: () -> Unit,
+    onNavigateToAssignments: () -> Unit,
+    onNavigateToFee: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(
+            text = "Quick Actions",
+            color = MaterialTheme.colorScheme.primary,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 4.dp)
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            val items = listOf(
+                Triple("Profile", Icons.Default.Person, onNavigateToProfile),
+                Triple("Timetable", Icons.Default.CalendarMonth, onNavigateToTimetable),
+                Triple("Assignments", Icons.Default.Assignment, onNavigateToAssignments),
+                Triple("Fee", Icons.Default.Payments, onNavigateToFee)
+            )
+            items.forEach { (label, icon, action) ->
+                Surface(
+                    onClick = action,
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier
+                        .weight(1f)
+                        .shadow(1.dp, shape = RoundedCornerShape(12.dp))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .padding(vertical = 8.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = label,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = label,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }

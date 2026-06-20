@@ -515,6 +515,7 @@ fun LoadingStatusOverlay(message: String) {
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.4f))
+            .clickable(enabled = true, onClick = {})
             .padding(16.dp),
         contentAlignment = Alignment.BottomCenter
     ) {

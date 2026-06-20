@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.graphics.BitmapFactory
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.work.ExistingWorkPolicy
@@ -34,6 +35,13 @@ object AssignmentNotificationStore {
         val updated = getNotifiedKeys(context).apply { addAll(keys) }
         prefs.edit().putStringSet(KEY_NOTIFIED_ASSIGNMENTS, updated).apply()
     }
+
+    fun clear(context: Context) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .remove(KEY_NOTIFIED_ASSIGNMENTS)
+            .apply()
+    }
 }
 
 object AssignmentNotificationManager {
@@ -53,10 +61,14 @@ object AssignmentNotificationManager {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val largeIcon = NotificationGate.getAppIconBitmap(context)
+
         val notification = if (assignments.size == 1) {
             val assignment = assignments.first()
             NotificationCompat.Builder(context, CHANNEL_NEW_POSTS)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setLargeIcon(largeIcon)
+                .setColor(0xFF004643.toInt())
                 .setContentTitle("New assignment posted")
                 .setContentText("${assignment.courseTitle} • ${assignment.assignmentTitle}")
                 .setContentIntent(pendingIntent)
@@ -73,7 +85,9 @@ object AssignmentNotificationManager {
                 }
             }
             NotificationCompat.Builder(context, CHANNEL_NEW_POSTS)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setLargeIcon(largeIcon)
+                .setColor(0xFF004643.toInt())
                 .setContentTitle("New assignments posted")
                 .setContentText("${assignments.size} new assignments")
                 .setStyle(style)
@@ -161,8 +175,11 @@ object AssignmentNotificationBuilder {
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val largeIcon = NotificationGate.getAppIconBitmap(context)
         return NotificationCompat.Builder(context, CHANNEL_REMINDERS)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setLargeIcon(largeIcon)
+            .setColor(0xFF004643.toInt())
             .setContentTitle(title)
             .setContentText(content)
             .setAutoCancel(true)

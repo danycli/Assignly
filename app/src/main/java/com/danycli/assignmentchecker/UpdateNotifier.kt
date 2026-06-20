@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.graphics.BitmapFactory
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 
@@ -40,8 +41,11 @@ object UpdateNotifier {
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(updateInfo.releaseUrl))
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         val pendingIntent = PendingIntent.getActivity(context, 0, intent, flags)
+        val largeIcon = NotificationGate.getAppIconBitmap(context)
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setLargeIcon(largeIcon)
+            .setColor(0xFF004643.toInt())
             .setContentTitle("Update available")
             .setContentText("A newer version (${updateInfo.displayLabel}) is available.")
             .setAutoCancel(true)
