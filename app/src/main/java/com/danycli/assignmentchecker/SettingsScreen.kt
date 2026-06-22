@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -23,6 +24,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
@@ -34,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -43,7 +47,11 @@ fun SettingsScreen(
     initialSettings: AppSettings,
     onBack: () -> Unit,
     onSaveSettings: (AppSettings) -> Unit,
-    onViewUploadQueue: () -> Unit = {}
+    onViewUploadQueue: () -> Unit = {},
+    onChangePassword: () -> Unit = {},
+    onOpenDisclaimer: () -> Unit = {},
+    onShowMessage: (String) -> Unit = {},
+    onCheckForUpdates: ((UpdateCheckResult) -> Unit) -> Unit = {}
 ) {
     var backgroundSyncEnabled by remember { mutableStateOf(initialSettings.backgroundSyncEnabled) }
     var selectedIntervalHours by remember { mutableStateOf(initialSettings.syncIntervalHours.coerceIn(1L, 24L)) }
@@ -52,9 +60,11 @@ fun SettingsScreen(
     var uploadNotificationsEnabled by remember { mutableStateOf(initialSettings.uploadNotificationsEnabled) }
     var assignmentNotificationsEnabled by remember { mutableStateOf(initialSettings.assignmentNotificationsEnabled) }
     var marksNotificationsEnabled by remember { mutableStateOf(initialSettings.marksNotificationsEnabled) }
+    var classNotificationsEnabled by remember { mutableStateOf(initialSettings.classNotificationsEnabled) }
     var downloadBehavior by remember { mutableStateOf(initialSettings.downloadBehavior) }
     var themeMode by remember { mutableStateOf(initialSettings.themeMode) }
     var rememberRegistrationNumber by remember { mutableStateOf(initialSettings.rememberRegistrationNumber) }
+    var biometricLockEnabled by remember { mutableStateOf(initialSettings.biometricLockEnabled) }
 
     val context = LocalContext.current
     val intervalOptions = listOf(1L, 3L, 6L, 12L, 24L)
@@ -66,9 +76,11 @@ fun SettingsScreen(
         uploadNotificationsEnabled = uploadNotificationsEnabled,
         assignmentNotificationsEnabled = assignmentNotificationsEnabled,
         marksNotificationsEnabled = marksNotificationsEnabled,
+        classNotificationsEnabled = classNotificationsEnabled,
         downloadBehavior = downloadBehavior,
         themeMode = themeMode,
-        rememberRegistrationNumber = rememberRegistrationNumber
+        rememberRegistrationNumber = rememberRegistrationNumber,
+        biometricLockEnabled = biometricLockEnabled
     )
 
     Scaffold(
@@ -195,6 +207,15 @@ fun SettingsScreen(
                                 onSaveSettings(buildSettings())
                             }
                         )
+                        SettingToggleRow(
+                            title = "Class reminder notifications",
+                            subtitle = "Notify 5 minutes before weekly classes.",
+                            checked = classNotificationsEnabled,
+                            onCheckedChange = {
+                                classNotificationsEnabled = it
+                                onSaveSettings(buildSettings())
+                            }
+                        )
                     }
                 }
             }
@@ -287,19 +308,64 @@ fun SettingsScreen(
                                 }
                             }
                         )
+                        SettingToggleRow(
+                            title = "Biometric app lock",
+                            subtitle = "Secure the app using fingerprint or face verification.",
+                            checked = biometricLockEnabled,
+                            onCheckedChange = {
+                                biometricLockEnabled = it
+                                onSaveSettings(buildSettings())
+                            }
+                        )
                     }
                 }
             }
 
             item {
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("Performance mode", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-                        Text(
-                            "This build enables lighter list rows and deferred background work to reduce UI stutter while scrolling.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
-                            fontSize = 12.sp
-                        )
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("About & Updates", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Assignly", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+                                Text("Version ${com.danycli.assignmentchecker.BuildConfig.VERSION_NAME} (${com.danycli.assignmentchecker.BuildConfig.VERSION_CODE})", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f), fontSize = 12.sp)
+                            }
+                            var isCheckingUpdates by remember { mutableStateOf(false) }
+                            Button(
+                                onClick = {
+                                    isCheckingUpdates = true
+                                    onCheckForUpdates { result ->
+                                        isCheckingUpdates = false
+                                        when (result) {
+                                            UpdateCheckResult.UPDATE_AVAILABLE -> {
+                                                onShowMessage("New update available!")
+                                            }
+                                            UpdateCheckResult.UP_TO_DATE -> {
+                                                onShowMessage("Your app is up to date.")
+                                            }
+                                            UpdateCheckResult.ERROR -> {
+                                                onShowMessage("Failed to check for updates.")
+                                            }
+                                        }
+                                    }
+                                },
+                                enabled = !isCheckingUpdates
+                            ) {
+                                if (isCheckingUpdates) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                } else {
+                                    Text("Check for updates")
+                                }
+                            }
+                        }
                     }
                 }
             }

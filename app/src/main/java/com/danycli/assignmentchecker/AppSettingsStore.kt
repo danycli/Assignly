@@ -10,9 +10,11 @@ data class AppSettings(
     val uploadNotificationsEnabled: Boolean,
     val assignmentNotificationsEnabled: Boolean,
     val marksNotificationsEnabled: Boolean,
+    val classNotificationsEnabled: Boolean = true,
     val downloadBehavior: DownloadBehavior,
     val themeMode: ThemeMode,
-    val rememberRegistrationNumber: Boolean = true
+    val rememberRegistrationNumber: Boolean = true,
+    val biometricLockEnabled: Boolean = false
 )
 
 object AppSettingsStore {
@@ -24,9 +26,11 @@ object AppSettingsStore {
     private const val KEY_UPLOAD_NOTIFICATIONS_ENABLED = "upload_notifications_enabled"
     private const val KEY_ASSIGNMENT_NOTIFICATIONS_ENABLED = "assignment_notifications_enabled"
     private const val KEY_MARKS_NOTIFICATIONS_ENABLED = "marks_notifications_enabled"
+    private const val KEY_CLASS_NOTIFICATIONS_ENABLED = "class_notifications_enabled"
     private const val KEY_DOWNLOAD_BEHAVIOR = "download_behavior"
     private const val KEY_THEME_MODE = "theme_mode"
     private const val KEY_REMEMBER_REGISTRATION_NUMBER = "remember_registration_number"
+    private const val KEY_BIOMETRIC_LOCK_ENABLED = "biometric_lock_enabled"
 
     private const val DEFAULT_BACKGROUND_SYNC_ENABLED = true
     private const val DEFAULT_SYNC_INTERVAL_HOURS = 6L
@@ -35,9 +39,11 @@ object AppSettingsStore {
     private const val DEFAULT_UPLOAD_NOTIFICATIONS_ENABLED = true
     private const val DEFAULT_ASSIGNMENT_NOTIFICATIONS_ENABLED = true
     private const val DEFAULT_MARKS_NOTIFICATIONS_ENABLED = true
+    private const val DEFAULT_CLASS_NOTIFICATIONS_ENABLED = true
     private val DEFAULT_DOWNLOAD_BEHAVIOR = DownloadBehavior.ASK_EVERY_TIME
     private val DEFAULT_THEME_MODE = ThemeMode.SYSTEM
     private const val DEFAULT_REMEMBER_REGISTRATION_NUMBER = true
+    private const val DEFAULT_BIOMETRIC_LOCK_ENABLED = false
 
     fun get(context: Context): AppSettings {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -61,6 +67,10 @@ object AppSettingsStore {
                 KEY_MARKS_NOTIFICATIONS_ENABLED,
                 DEFAULT_MARKS_NOTIFICATIONS_ENABLED
             ),
+            classNotificationsEnabled = prefs.getBoolean(
+                KEY_CLASS_NOTIFICATIONS_ENABLED,
+                DEFAULT_CLASS_NOTIFICATIONS_ENABLED
+            ),
             downloadBehavior = prefs.getString(KEY_DOWNLOAD_BEHAVIOR, DEFAULT_DOWNLOAD_BEHAVIOR.name)
                 ?.let { runCatching { DownloadBehavior.valueOf(it) }.getOrNull() }
                 ?: DEFAULT_DOWNLOAD_BEHAVIOR,
@@ -70,6 +80,10 @@ object AppSettingsStore {
             rememberRegistrationNumber = prefs.getBoolean(
                 KEY_REMEMBER_REGISTRATION_NUMBER,
                 DEFAULT_REMEMBER_REGISTRATION_NUMBER
+            ),
+            biometricLockEnabled = prefs.getBoolean(
+                KEY_BIOMETRIC_LOCK_ENABLED,
+                DEFAULT_BIOMETRIC_LOCK_ENABLED
             )
         )
     }
@@ -84,9 +98,11 @@ object AppSettingsStore {
             .putBoolean(KEY_UPLOAD_NOTIFICATIONS_ENABLED, settings.uploadNotificationsEnabled)
             .putBoolean(KEY_ASSIGNMENT_NOTIFICATIONS_ENABLED, settings.assignmentNotificationsEnabled)
             .putBoolean(KEY_MARKS_NOTIFICATIONS_ENABLED, settings.marksNotificationsEnabled)
+            .putBoolean(KEY_CLASS_NOTIFICATIONS_ENABLED, settings.classNotificationsEnabled)
             .putString(KEY_DOWNLOAD_BEHAVIOR, settings.downloadBehavior.name)
             .putString(KEY_THEME_MODE, settings.themeMode.name)
             .putBoolean(KEY_REMEMBER_REGISTRATION_NUMBER, settings.rememberRegistrationNumber)
+            .putBoolean(KEY_BIOMETRIC_LOCK_ENABLED, settings.biometricLockEnabled)
             .apply()
     }
 }

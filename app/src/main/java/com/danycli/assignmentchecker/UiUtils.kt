@@ -11,6 +11,7 @@ import android.webkit.MimeTypeMap
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
+import kotlinx.coroutines.TimeoutCancellationException
 
 const val DISCLAIMER_URL = "https://github.com/danycli/Assignly#disclaimer"
 const val CAPTCHA_RETRY_DELAY_MS = 250L
@@ -36,6 +37,56 @@ fun isNetworkError(e: Throwable): Boolean {
         current = current.cause
     }
     return false
+}
+
+fun getNetworkErrorMessage(context: Context, e: Throwable): String {
+    val isOnline = isDeviceOnline(context)
+    var current: Throwable? = e
+    var portalSystemEx: PortalSystemException? = null
+    var isTimeout = false
+    var isPoolError = false
+    
+    while (current != null) {
+        if (current is PortalSystemException) {
+            portalSystemEx = current
+        }
+        val msg = current.message?.lowercase().orEmpty()
+        if (msg.contains("max pool size") || 
+            msg.contains("pool size reached") || 
+            msg.contains("connection pool") || 
+            msg.contains("timeout expired") ||
+            msg.contains("pool")
+        ) {
+            isPoolError = true
+        }
+        if (current is java.net.SocketTimeoutException || 
+            current is java.io.InterruptedIOException ||
+            current is TimeoutCancellationException ||
+            msg.contains("timeout")
+        ) {
+            isTimeout = true
+        }
+        current = current.cause
+    }
+    
+    return when {
+        portalSystemEx != null -> portalSystemEx.message ?: "Server-side error occurred."
+        isPoolError -> "The portal server is currently overloaded (database connection pool size reached). Please try again in a few minutes."
+        isTimeout -> {
+            if (isOnline) {
+                "Connection timed out. The portal server may be overloaded or down. Please try again."
+            } else {
+                "Connection timed out. Please check your internet connection."
+            }
+        }
+        else -> {
+            if (isOnline) {
+                "Failed to connect to the portal. The server might be experiencing high load or is currently offline."
+            } else {
+                "Network unavailable. Please check your internet connection."
+            }
+        }
+    }
 }
 
 fun mapLoginErrorToMessage(message: String?): String {
@@ -165,7 +216,7 @@ fun guessMimeType(fileName: String): String {
     return mime ?: "application/octet-stream"
 }
 
-fun writeBytesToDownloads(context: Context, fileName: String, bytes: ByteArray): Boolean {
+fun writeBytesToDownloads(context: Context, fileName: String, bytes: ByteArray): String? {
     val safeName = sanitizeDownloadFileName(fileName)
     val resolver = context.contentResolver
     return try {
@@ -176,14 +227,18 @@ fun writeBytesToDownloads(context: Context, fileName: String, bytes: ByteArray):
                 put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/Assignly")
             }
             val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                ?: return false
+                ?: return null
             val wrote = resolver.openOutputStream(uri)?.use { stream ->
                 stream.write(bytes)
                 stream.flush()
                 true
             } ?: false
-            if (!wrote) resolver.delete(uri, null, null)
-            wrote
+            if (wrote) {
+                uri.toString()
+            } else {
+                resolver.delete(uri, null, null)
+                null
+            }
         } else {
             val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
             val file = File(dir, safeName)
@@ -191,11 +246,11 @@ fun writeBytesToDownloads(context: Context, fileName: String, bytes: ByteArray):
                 stream.write(bytes)
                 stream.flush()
             }
-            true
+            Uri.fromFile(file).toString()
         }
     } catch (e: Exception) {
         Log.e("UiUtils", "writeBytesToDownloads failed: ${e.javaClass.simpleName}")
-        false
+        null
     }
 }
 
@@ -248,22 +303,10 @@ fun uriToFile(context: Context, uri: Uri): File? {
             return null
         }
 
-        // Extract original filename and extension
+        // Extract original filename and preserve it
         val fileName = getFileNameFromUri(context, uri) ?: "upload_temp_file"
-        val extension = if (fileName.contains(".")) {
-            fileName.substringAfterLast(".")
-        } else {
-            ""
-        }
-
-        // Create temp file with extension preserved
-        val tempFileName = if (extension.isNotEmpty()) {
-            "upload_temp_file.$extension"
-        } else {
-            "upload_temp_file"
-        }
-
-        tempFile = File(context.cacheDir, tempFileName)
+        val safeName = fileName.replace("[\\\\/:*?\"<>|]".toRegex(), "_")
+        tempFile = File(context.cacheDir, safeName)
         FileOutputStream(tempFile).use { output ->
             inputStream.use { input ->
                 input.copyTo(output)
@@ -345,6 +388,17 @@ fun getRelativeDateString(epochMs: Long): String {
         diffDays < 7 -> "$diffDays days ago"
         diffDays < 30 -> "${diffDays / 7} weeks ago"
         else -> "${diffDays / 30} months ago"
+    }
+}
+
+fun getOrdinalSuffix(number: Int): String {
+    if (number <= 0) return ""
+    return when {
+        number % 100 in 11..13 -> "${number}th"
+        number % 10 == 1 -> "${number}st"
+        number % 10 == 2 -> "${number}nd"
+        number % 10 == 3 -> "${number}rd"
+        else -> "${number}th"
     }
 }
 

@@ -9,6 +9,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -31,6 +32,14 @@ fun TimetableScreen(
     timetableError: String?,
     onBack: () -> Unit
 ) {
+    var currentTime by remember { mutableStateOf(LocalTime.now()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            currentTime = LocalTime.now()
+            kotlinx.coroutines.delay(10000L)
+        }
+    }
+
     val currentDayOfWeek = remember { 
         LocalDate.now().dayOfWeek.name.lowercase().replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() } 
     }
@@ -72,8 +81,8 @@ fun TimetableScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Close",
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
                             tint = MaterialTheme.colorScheme.onPrimary
                         )
                     }
@@ -97,7 +106,7 @@ fun TimetableScreen(
             ) {
                 Column {
                     Text(
-                        text = "📅 $selectedDay",
+                        text = selectedDay,
                         fontSize = 20.sp,
                         fontWeight = FontWeight.ExtraBold,
                         color = MaterialTheme.colorScheme.onSurface
@@ -163,7 +172,12 @@ fun TimetableScreen(
                 if (pageLectures.isEmpty()) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("🎉", fontSize = 48.sp)
+                            Icon(
+                                imageVector = Icons.Default.DateRange,
+                                contentDescription = null,
+                                modifier = Modifier.size(48.dp),
+                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+                            )
                             Spacer(modifier = Modifier.height(16.dp))
                             Text("No classes scheduled", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                             Spacer(modifier = Modifier.height(4.dp))
@@ -178,10 +192,10 @@ fun TimetableScreen(
                     ) {
                         // NEXT CLASS SECTION
                         if (pageDay == currentDayOfWeek) {
-                            val nextClass = pageLectures.firstOrNull { isClassUpcomingOrOngoing(it.startTime, it.endTime) }
+                            val nextClass = pageLectures.firstOrNull { isClassUpcomingOrOngoing(it.startTime, it.endTime, currentTime) }
                             if (nextClass != null) {
                                 item {
-                                    NextClassWidget(nextClass)
+                                    NextClassWidget(nextClass, currentTime)
                                     Spacer(modifier = Modifier.height(8.dp))
                                 }
                             }
@@ -193,7 +207,8 @@ fun TimetableScreen(
                         ) { lecture ->
                             CompactTimetableCard(
                                 lecture = lecture, 
-                                isToday = pageDay == currentDayOfWeek
+                                isToday = pageDay == currentDayOfWeek,
+                                currentTime = currentTime
                             )
                         }
                     }
@@ -204,7 +219,18 @@ fun TimetableScreen(
 }
 
 @Composable
-fun NextClassWidget(lecture: TimetableLecture) {
+fun NextClassWidget(lecture: TimetableLecture, currentTime: LocalTime) {
+    val isOngoing = isClassOngoing(lecture.startTime, lecture.endTime, currentTime)
+    val isUpcoming = isClassUpcoming(lecture.startTime, currentTime)
+    val labelText = if (isOngoing) "Ongoing Class" else "Next Class"
+    val countdownText = if (isOngoing) {
+        getRemainingTimeText(lecture.endTime, currentTime)
+    } else if (isUpcoming) {
+        getUpcomingTimeText(lecture.startTime, currentTime)
+    } else {
+        null
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
@@ -212,13 +238,27 @@ fun NextClassWidget(lecture: TimetableLecture) {
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = "Next Class",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.ExtraBold,
-                modifier = Modifier.padding(bottom = 4.dp)
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = labelText,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                if (countdownText != null) {
+                    Text(
+                        text = countdownText,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = lecture.courseName,
                 fontSize = 16.sp,
@@ -243,14 +283,30 @@ fun NextClassWidget(lecture: TimetableLecture) {
                     fontWeight = FontWeight.Medium
                 )
             }
+            if (isOngoing) {
+                Spacer(modifier = Modifier.height(8.dp))
+                val progress = getClassProgress(lecture.startTime, lecture.endTime, currentTime)
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier.fillMaxWidth().height(4.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
+                    strokeCap = androidx.compose.ui.graphics.StrokeCap.Round
+                )
+            }
         }
     }
 }
 
 @Composable
-fun CompactTimetableCard(lecture: TimetableLecture, isToday: Boolean) {
+fun CompactTimetableCard(
+    lecture: TimetableLecture,
+    isToday: Boolean,
+    currentTime: LocalTime
+) {
     val courseColor = remember(lecture.courseName) { getCourseColor(lecture.courseName) }
-    val isOngoing = remember(lecture, isToday) { if (isToday) isClassOngoing(lecture.startTime, lecture.endTime) else false }
+    val isOngoing = if (isToday) isClassOngoing(lecture.startTime, lecture.endTime, currentTime) else false
+    val isUpcoming = if (isToday) isClassUpcoming(lecture.startTime, currentTime) else false
     
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -294,12 +350,31 @@ fun CompactTimetableCard(lecture: TimetableLecture, isToday: Boolean) {
                     )
                 }
                 if (isOngoing) {
-                    Text(
-                        text = "Now",
-                        color = MaterialTheme.colorScheme.error,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            text = "Now",
+                            color = MaterialTheme.colorScheme.error,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                        getRemainingTimeText(lecture.endTime, currentTime)?.let { remainingText ->
+                            Text(
+                                text = remainingText,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                } else if (isUpcoming) {
+                    getUpcomingTimeText(lecture.startTime, currentTime)?.let { upcomingText ->
+                        Text(
+                            text = upcomingText,
+                            color = MaterialTheme.colorScheme.secondary,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
             
@@ -336,6 +411,18 @@ fun CompactTimetableCard(lecture: TimetableLecture, isToday: Boolean) {
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(start = 14.dp)
             )
+
+            if (isOngoing) {
+                Spacer(modifier = Modifier.height(8.dp))
+                val progress = getClassProgress(lecture.startTime, lecture.endTime, currentTime)
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier.fillMaxWidth().height(4.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
+                    strokeCap = androidx.compose.ui.graphics.StrokeCap.Round
+                )
+            }
         }
     }
 }
@@ -362,25 +449,75 @@ fun getCourseColor(courseName: String): Color {
 
 private val timeFormatter = DateTimeFormatter.ofPattern("h:mm a")
 
-fun isClassOngoing(startTimeStr: String, endTimeStr: String): Boolean {
+fun isClassOngoing(startTimeStr: String, endTimeStr: String, currentTime: LocalTime): Boolean {
     try {
         val start = LocalTime.parse(startTimeStr.uppercase().trim(), timeFormatter)
         val end = LocalTime.parse(endTimeStr.uppercase().trim(), timeFormatter)
-        val now = LocalTime.now()
         
-        return now.isAfter(start) && now.isBefore(end)
+        return (currentTime.isAfter(start) || currentTime.equals(start)) && currentTime.isBefore(end)
     } catch (e: Exception) {
         return false
     }
 }
 
-fun isClassUpcomingOrOngoing(startTimeStr: String, endTimeStr: String): Boolean {
+fun isClassUpcoming(startTimeStr: String, currentTime: LocalTime): Boolean {
     try {
-        val end = LocalTime.parse(endTimeStr.uppercase().trim(), timeFormatter)
-        val now = LocalTime.now()
-        
-        return now.isBefore(end)
+        val start = LocalTime.parse(startTimeStr.uppercase().trim(), timeFormatter)
+        return currentTime.isBefore(start)
     } catch (e: Exception) {
         return false
+    }
+}
+
+fun isClassUpcomingOrOngoing(startTimeStr: String, endTimeStr: String, currentTime: LocalTime): Boolean {
+    try {
+        val end = LocalTime.parse(endTimeStr.uppercase().trim(), timeFormatter)
+        return currentTime.isBefore(end)
+    } catch (e: Exception) {
+        return false
+    }
+}
+
+fun formatMinutesDuration(minutes: Long): String {
+    if (minutes < 60) {
+        return "$minutes min"
+    }
+    val hours = minutes / 60
+    val mins = minutes % 60
+    return if (mins > 0) "${hours}h ${mins}m" else "${hours}h"
+}
+
+fun getRemainingTimeText(endTimeStr: String, currentTime: LocalTime): String? {
+    try {
+        val end = LocalTime.parse(endTimeStr.uppercase().trim(), timeFormatter)
+        val diff = java.time.temporal.ChronoUnit.MINUTES.between(currentTime, end)
+        if (diff <= 0) return null
+        return "Ends in ${formatMinutesDuration(diff)}"
+    } catch (e: Exception) {
+        return null
+    }
+}
+
+fun getUpcomingTimeText(startTimeStr: String, currentTime: LocalTime): String? {
+    try {
+        val start = LocalTime.parse(startTimeStr.uppercase().trim(), timeFormatter)
+        val diff = java.time.temporal.ChronoUnit.MINUTES.between(currentTime, start)
+        if (diff <= 0) return null
+        return "Starts in ${formatMinutesDuration(diff)}"
+    } catch (e: Exception) {
+        return null
+    }
+}
+
+fun getClassProgress(startTimeStr: String, endTimeStr: String, currentTime: LocalTime): Float {
+    try {
+        val start = LocalTime.parse(startTimeStr.uppercase().trim(), timeFormatter)
+        val end = LocalTime.parse(endTimeStr.uppercase().trim(), timeFormatter)
+        val totalMinutes = java.time.temporal.ChronoUnit.MINUTES.between(start, end)
+        if (totalMinutes <= 0) return 0f
+        val elapsedMinutes = java.time.temporal.ChronoUnit.MINUTES.between(start, currentTime)
+        return (elapsedMinutes.toFloat() / totalMinutes.toFloat()).coerceIn(0f, 1f)
+    } catch (e: Exception) {
+        return 0f
     }
 }

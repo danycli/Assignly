@@ -52,7 +52,7 @@ class AssignmentSyncWorker(
 ) : CoroutineWorker(appContext, workerParams) {
 
     override suspend fun doWork(): Result {
-        val updateInfo = withContext(Dispatchers.IO) { fetchAppUpdateInfo() }
+        val updateInfo = withContext(Dispatchers.IO) { fetchAppUpdateInfo(applicationContext, force = false) }
         val settings = AppSettingsStore.get(applicationContext)
         if (settings.updateNotificationsEnabled &&
             updateInfo != null &&
@@ -98,9 +98,15 @@ class AssignmentSyncWorker(
                         studentName = repository.getCurrentStudentName()
                     )
                     
-                    val fetchedTimetable = repository.fetchTimetable()
-                    if (fetchedTimetable.isNotEmpty()) {
-                        TimetableCacheStore.saveSnapshot(applicationContext, fetchedTimetable)
+                    // Fetch and sync timetable in the background
+                    runCatching {
+                        val fetchedTimetable = repository.fetchTimetable()
+                        if (fetchedTimetable.isNotEmpty()) {
+                            TimetableCacheStore.saveSnapshot(applicationContext, fetchedTimetable)
+                            TimetableNotificationManager.scheduleClassReminders(applicationContext)
+                        }
+                    }.onFailure { err ->
+                        Log.e("AssignmentSyncWorker", "Failed to background-fetch timetable: ${err.message}")
                     }
 
                     // Fetch and sync student profile & photo in the background
@@ -113,6 +119,68 @@ class AssignmentSyncWorker(
                         }
                     }.onFailure { err ->
                         Log.e("AssignmentSyncWorker", "Failed to background-fetch profile: ${err.message}")
+                    }
+
+                    // Fetch and sync Grades & GPA summary in the background
+                    var gradesSummary: GpaSummary? = null
+                    runCatching {
+                        val fetchedGrades = repository.fetchGrades()
+                        if (fetchedGrades.semesters.isNotEmpty()) {
+                            gradesSummary = fetchedGrades
+                            GradesCacheStore.saveSnapshot(applicationContext, fetchedGrades)
+                        }
+                    }.onFailure { err ->
+                        Log.e("AssignmentSyncWorker", "Failed to background-fetch grades: ${err.message}")
+                    }
+
+                    // Fetch and sync Attendance summary & detail logs in the background
+                    runCatching {
+                        // Resolve course codes if grades summary is available (either freshly fetched or from cache)
+                        val resolvedGrades = gradesSummary ?: GradesCacheStore.loadSnapshot(applicationContext)?.summary
+                        val resolvedCodes = resolvedGrades?.semesters?.flatMap { it.courses }
+                            ?.associate { it.courseName.lowercase().replace("[^a-z0-9]".toRegex(), "") to it.courseCode }
+
+                        val fetchedAttendance = repository.fetchAttendanceSummary(resolvedCodes)
+                        if (fetchedAttendance.isNotEmpty()) {
+                            val fetchedDetails = mutableListOf<AttendanceDetail>()
+                            for (course in fetchedAttendance) {
+                                runCatching {
+                                    val target = if (course.courseCode.isBlank()) course.courseName else course.courseCode
+                                    val details = repository.fetchAttendanceDetail(target)
+                                    fetchedDetails.addAll(details)
+                                }.onFailure { err ->
+                                    Log.e("AssignmentSyncWorker", "Failed to background-fetch attendance details for ${course.courseName}: ${err.message}")
+                                }
+                            }
+                            AttendanceCacheStore.saveSnapshot(applicationContext, fetchedAttendance, fetchedDetails)
+                        }
+                    }.onFailure { err ->
+                        Log.e("AssignmentSyncWorker", "Failed to background-fetch attendance: ${err.message}")
+                    }
+
+                    // Fetch and sync Fee Details in the background
+                    runCatching {
+                        val feeSnapshot = repository.fetchFeeDetails()
+                        FeeCacheStore.saveSnapshot(applicationContext, feeSnapshot)
+                    }.onFailure { err ->
+                        Log.e("AssignmentSyncWorker", "Failed to background-fetch fee details: ${err.message}")
+                    }
+
+                    // Fetch and sync Enrolled Courses & Course Files in the background
+                    runCatching {
+                        val enrolledData = repository.fetchEnrolledCourses()
+                        EnrolledCoursesCacheStore.saveSnapshot(applicationContext, enrolledData)
+
+                        enrolledData.courses.forEach { course ->
+                            runCatching {
+                                val files = repository.fetchCourseFiles(course.courseCode, course.courseTitle)
+                                CourseFilesCacheStore.saveSnapshot(applicationContext, course.courseCode, files)
+                            }.onFailure { err ->
+                                Log.e("AssignmentSyncWorker", "Failed to background-fetch course files for ${course.courseCode}: ${err.message}")
+                            }
+                        }
+                    }.onFailure { err ->
+                        Log.e("AssignmentSyncWorker", "Failed to background-fetch enrolled courses: ${err.message}")
                     }
 
                     // Fetch and sync assessment marks in the background if marks notifications are enabled

@@ -1,7 +1,6 @@
 package com.danycli.assignmentchecker.ui
 
 import android.net.Uri
-import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -307,6 +306,7 @@ fun HistoricalAssignmentsScreen(
                     val clipboardManager = LocalClipboardManager.current
                     val uriHandler = LocalUriHandler.current
                     val context = LocalContext.current
+                    val showMessage = LocalShowMessage.current
                     val hasSubmitLink = assignment.submitLink.isNotEmpty()
                     val hasDownloadLink = assignment.downloadLink.isNotEmpty()
                     val isDark = isSystemInDarkTheme()
@@ -477,7 +477,7 @@ fun HistoricalAssignmentsScreen(
                                 onClick = {
                                     menuExpanded = false
                                     clipboardManager.setText(AnnotatedString(assignment.assignmentTitle))
-                                    Toast.makeText(context, "Title copied", Toast.LENGTH_SHORT).show()
+                                    showMessage("Title copied")
                                 }
                             )
                             DropdownMenuItem(

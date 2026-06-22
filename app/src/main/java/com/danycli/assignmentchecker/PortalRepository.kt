@@ -107,8 +107,11 @@ class PortalRepository {
 
     private fun detectPortalSystemErrors(html: String) {
         val lowerHtml = html.lowercase()
-        val isPoolTimeout = lowerHtml.contains("timeout expired") && 
-            (lowerHtml.contains("pool") || lowerHtml.contains("connection"))
+        val isPoolTimeout = (lowerHtml.contains("timeout expired") && (lowerHtml.contains("pool") || lowerHtml.contains("connection"))) ||
+            lowerHtml.contains("max pool size") ||
+            (lowerHtml.contains("connection pool") && lowerHtml.contains("timeout")) ||
+            lowerHtml.contains("database connection pool") ||
+            lowerHtml.contains("has reached its maximum pool size")
         
         if (isPoolTimeout) {
             throw PortalSystemException("The portal server is currently overloaded and cannot connect to its database. Please try again in a few minutes.")
@@ -1398,6 +1401,7 @@ class PortalRepository {
             Pair(pendingAssignments, submittedAssignments)
         } catch (e: Exception) {
             Log.e("PortalAuth", "Error fetching: ${e.message}", e)
+            if (e is PortalSystemException) throw e
             Pair(emptyList(), emptyList())
         }
     }
@@ -1950,10 +1954,8 @@ class PortalRepository {
                 }
             }
             
-            // Add file with correct input name
-            Log.d("PortalAuth", "Adding file: ${file.name}")
-            Log.d("PortalAuth", "Using file input name: $fileInputName")
-            val fileBody = file.asRequestBody("application/octet-stream".toMediaTypeOrNull())
+            val mimeType = guessMimeType(file.name)
+            val fileBody = file.asRequestBody(mimeType.toMediaTypeOrNull())
             formBuilder.addFormDataPart(fileInputName, file.name, fileBody)
             
             // Step 4: POST the form
@@ -2029,7 +2031,7 @@ class PortalRepository {
             fun Element.isLikelyVisible(): Boolean {
                 var node: Element? = this
                 while (node != null) {
-                    val style = node.attr("style").lowercase()
+                    val style = node.attr("style").lowercase().replace("\\s".toRegex(), "")
                     val className = node.className().lowercase()
                     if (node.hasAttr("hidden")) return false
                     if (node.attr("aria-hidden").equals("true", ignoreCase = true)) return false
@@ -2808,16 +2810,42 @@ class PortalRepository {
         val trimmed = time.trim()
         if (trimmed.isBlank()) return ""
 
-        val parts = trimmed.split(":", " ")
+        // Handle cases like "08:30-10:00" passed accidentally or "08:30 AM"
+        val cleanTime = trimmed.split("-", " ").first()
+        val parts = cleanTime.split(":")
         val hourRaw = parts.getOrNull(0)?.toIntOrNull() ?: return trimmed
         val minuteRaw = parts.getOrNull(1)?.filter { it.isDigit() }?.toIntOrNull() ?: 0
 
-        val isPm = trimmed.contains("PM", ignoreCase = true) || 
-                   (!trimmed.contains("AM", ignoreCase = true) && hourRaw in 1..7)
+        val hasAm = trimmed.contains("AM", ignoreCase = true)
+        val hasPm = trimmed.contains("PM", ignoreCase = true)
 
-        val displayHour = String.format(Locale.US, "%02d", hourRaw)
+        val (finalHour, suffix) = when {
+            hasAm -> {
+                val h = if (hourRaw == 12) 0 else hourRaw
+                h to "AM"
+            }
+            hasPm -> {
+                val h = if (hourRaw == 12) 12 else hourRaw
+                h to "PM"
+            }
+            else -> {
+                // Heuristic for 24h or missing suffix
+                // If hour is 8-11, assume AM unless it's explicitly PM.
+                // If hour is 1-7, assume PM if it's a typical afternoon class time.
+                // However, most portals use 24h if no suffix.
+                when {
+                    hourRaw >= 12 -> {
+                        val h = if (hourRaw > 12) hourRaw - 12 else 12
+                        h to "PM"
+                    }
+                    hourRaw in 1..7 -> hourRaw to "PM" // Typical afternoon
+                    else -> hourRaw to "AM"
+                }
+            }
+        }
+
+        val displayHour = if (finalHour == 0) "12" else String.format(Locale.US, "%02d", finalHour)
         val displayMinute = String.format(Locale.US, "%02d", minuteRaw)
-        val suffix = if (isPm) "PM" else "AM"
         return "$displayHour:$displayMinute $suffix"
     }
 
@@ -3990,9 +4018,8 @@ class PortalRepository {
             updateCurrentStudentPhotoUrl(parseStudentPhotoUrlFromHtml(html, finalUrl))
 
             val profile = parseFullStudentProfileFromHtml(html)
-
-            var email = ""
-            var phone = ""
+            var emailFromContact = ""
+            var mobileFromContact = ""
             runCatching {
                 val contactUrl = "$baseUrl/AddCellEmailInfo.aspx"
                 val contactRequest = Request.Builder()
@@ -4004,8 +4031,8 @@ class PortalRepository {
                     if (response.isSuccessful) {
                         val contactHtml = response.body?.string().orEmpty()
                         val parsed = parseContactInfo(contactHtml)
-                        email = parsed.first
-                        phone = parsed.second
+                        emailFromContact = parsed.first
+                        mobileFromContact = parsed.second
                     }
                 }
             }
@@ -4029,8 +4056,8 @@ class PortalRepository {
             }
 
             profile.copy(
-                email = email.takeIf { it.isNotBlank() } ?: profile.email,
-                phone = phone.takeIf { it.isNotBlank() } ?: profile.phone,
+                email = emailFromContact.takeIf { it.isNotBlank() } ?: profile.email,
+                mobile = mobileFromContact.takeIf { it.isNotBlank() } ?: profile.mobile,
                 scholarshipStatus = scholarshipStatus
             )
         } catch (e: Exception) {
@@ -4123,13 +4150,13 @@ class PortalRepository {
             ?: findValue("father's name", "father name", "father")
             ?: ""
 
-        val email = findByIdWildcard("lblEmail")
-            ?: findValue("email", "e-mail", "student email")
+        val mobile = findByIdWildcard("lblMobile")
+            ?: findValue("mobile", "cell", "mobile number")
             ?: ""
 
-        val phone = findByIdWildcard("lblMobile")
-            ?: findByIdWildcard("lblPhone")
-            ?: findValue("mobile", "phone", "cell", "contact")
+        val phone = findByIdWildcard("lblPhone")
+            ?: findByIdWildcard("lblTelephone")
+            ?: findValue("phone", "landline", "phone number", "telephone")
             ?: ""
 
         val campus = findByIdWildcard("lblCampus")
@@ -4147,6 +4174,16 @@ class PortalRepository {
             ?: findValue("scholarship status", "scholarship", "financial aid")
             ?: "No"
 
+        val dob = findByIdWildcard("lblDOB")
+            ?: findByIdWildcard("lblDateOfBirth")
+            ?: findValue("date of birth", "dob", "birth date")
+            ?: ""
+
+        val email = findByIdWildcard("lblEmail")
+            ?: findByIdWildcard("lblEmailAddress")
+            ?: findValue("email", "email address")
+            ?: ""
+
         return StudentProfile(
             name = name,
             regNumber = regNumber,
@@ -4157,7 +4194,9 @@ class PortalRepository {
             phone = phone,
             campus = campus,
             address = address,
-            scholarshipStatus = scholarshipStatus
+            scholarshipStatus = scholarshipStatus,
+            dob = dob,
+            mobile = mobile
         )
     }
 
@@ -4179,7 +4218,9 @@ class PortalRepository {
 
             if (name.contains("serviceno") || name.contains("network")) {
                 prefix = value
-            } else if (name.contains("cellno") || name.contains("mobile") || name.contains("phone") || (name.contains("cell") && !name.contains("serviceno"))) {
+            } else if ((name.contains("cellno") || name.contains("mobile") || name.contains("phone") || (name.contains("cell") && !name.contains("serviceno")))
+                && !name.contains("detail") && !name.contains("desc") && !name.contains("type") && !name.contains("status")
+            ) {
                 mainNumber = value
             } else if (name.contains("email")) {
                 email = value
@@ -4262,27 +4303,7 @@ class PortalRepository {
             }.getOrNull()
         }
 
-        fun parseSessionYear(session: String): Int {
-            if (session.isBlank()) return 2026
-            for (word in session.split(Regex("\\s+"))) {
-                val num = word.filter { it.isDigit() }.toIntOrNull()
-                if (num != null && num in 2000..2099) return num
-            }
-            return 2026
-        }
 
-        fun getPaymentDateForSession(session: String, seed: Int, type: String): String {
-            val year = parseSessionYear(session)
-            val isSpring = session.lowercase().contains("spring")
-            val month = if (isSpring) "Mar" else "Sep"
-            val dayOffset = when (type) {
-                "billed" -> 1
-                "scholarship" -> 10
-                else -> 20
-            }
-            val day = (dayOffset + (seed * 3)) % 28 + 1
-            return String.format(Locale.US, "%02d %s %d", day, month, year)
-        }
 
         // Parse Challans
         val challansList = mutableListOf<FeeChallan>()
@@ -4298,7 +4319,12 @@ class PortalRepository {
                     val text = anchor.text().lowercase()
                     val matches = hrefLower.contains("dopostback") && (text.contains("print") || text.contains("download") || text.contains("view"))
                     if (matches) {
-                        challanLink = href
+                        val postBackInfo = extractPostBackInfo(href)
+                        challanLink = if (postBackInfo != null) {
+                            toPostBackDownloadLink(postBackInfo, sourcePageUrl = "$baseUrl/FeeChallans.aspx")
+                        } else {
+                            href
+                        }
                     }
                     matches
                 }
@@ -4470,10 +4496,9 @@ class PortalRepository {
 
                         // 1. Add Debit Entry (Billed Fee)
                         if (semesterDues > 0.0) {
-                            val dateStr = getPaymentDateForSession(sessionVal, rIdx, "billed")
                             ledgerList.add(
                                 FeeLedgerEntry(
-                                    date = dateStr,
+                                    date = getPaymentDateForSession(sessionVal, "Debit"),
                                     description = "$feeTypeVal Billed",
                                     amount = semesterDues,
                                     type = "Debit"
@@ -4483,10 +4508,9 @@ class PortalRepository {
 
                         // 2. Add Credit Entry (Scholarship/Assistance)
                         if (scholarshipAmt > 0.0) {
-                            val dateStr = getPaymentDateForSession(sessionVal, rIdx, "scholarship")
                             ledgerList.add(
                                 FeeLedgerEntry(
-                                    date = dateStr,
+                                    date = getPaymentDateForSession(sessionVal, "Scholarship"),
                                     description = "$feeTypeVal Scholarship/Assistance",
                                     amount = scholarshipAmt,
                                     type = "Credit"
@@ -4496,10 +4520,9 @@ class PortalRepository {
 
                         // 3. Add Credit Entry (Payment)
                         if (duesPaid > 0.0) {
-                            val dateStr = getPaymentDateForSession(sessionVal, rIdx, "payment")
                             ledgerList.add(
                                 FeeLedgerEntry(
-                                    date = dateStr,
+                                    date = getPaymentDateForSession(sessionVal, "Credit"),
                                     description = "$feeTypeVal Paid",
                                     amount = duesPaid,
                                     type = "Credit"
@@ -4514,20 +4537,16 @@ class PortalRepository {
         }
 
         val sortedLedger = ledgerList.sortedWith(Comparator { e1, e2 ->
-            val parseDate = { dateStr: String ->
-                runCatching {
-                    val parts = dateStr.split(" ")
-                    val day = parts[0].toInt()
-                    val month = when (parts[1].lowercase()) {
-                        "jan" -> 1 "feb" -> 2 "mar" -> 3 "apr" -> 4 "may" -> 5 "jun" -> 6
-                        "jul" -> 7 "aug" -> 8 "sep" -> 9 "oct" -> 10 "nov" -> 11 "dec" -> 12
-                        else -> 1
-                    }
-                    val year = parts[2].toInt()
-                    year * 10000 + month * 100 + day
-                }.getOrDefault(0)
+            val p1 = parseSessionInfo(e1)
+            val p2 = parseSessionInfo(e2)
+
+            if (p1.first != p2.first) {
+                p2.first.compareTo(p1.first)
+            } else if (p1.second != p2.second) {
+                p2.second.compareTo(p1.second)
+            } else {
+                p2.third.compareTo(p1.third)
             }
-            parseDate(e2.date).compareTo(parseDate(e1.date))
         })
 
         val outstandingBalance = if (historyHtml != null) totalOutstanding else null
@@ -4565,6 +4584,38 @@ class PortalRepository {
         return client.newCall(request).execute().use { response ->
             response.body?.string().orEmpty()
         }
+    }
+
+    private fun getPaymentDateForSession(session: String, type: String): String {
+        val yearMatch = Regex("""\d{4}""").find(session)
+        val year = yearMatch?.value ?: "2024"
+        val isSpring = session.lowercase().contains("spring")
+        
+        return when (type) {
+            "Debit" -> if (isSpring) "01 Feb $year" else "01 Sep $year"
+            "Scholarship" -> if (isSpring) "10 Mar $year" else "10 Oct $year"
+            else -> if (isSpring) "20 Mar $year" else "20 Oct $year"
+        }
+    }
+
+    private fun parseSessionInfo(entry: FeeLedgerEntry): Triple<Int, Int, Int> {
+        val date = entry.date
+        val yearMatch = Regex("""\d{4}""").find(date)
+        val year = yearMatch?.value?.toIntOrNull() ?: 2026
+        
+        val monthStr = date.split(" ").getOrNull(1)?.lowercase() ?: ""
+        val monthPriority = when {
+            monthStr.contains("feb") || monthStr.contains("sep") -> 0
+            monthStr.contains("mar") || monthStr.contains("oct") -> 1
+            else -> 2
+        }
+
+        val typePriority = when {
+            entry.type == "Credit" && entry.description.lowercase().contains("paid") -> 2
+            entry.type == "Credit" -> 1
+            else -> 0
+        }
+        return Triple(year, monthPriority, typePriority)
     }
 
     fun fetchEnrolledCourses(): EnrolledCoursesData {
@@ -5014,5 +5065,166 @@ class PortalRepository {
             }
         }
         return files
+    }
+
+    fun extractPasswordRules(html: String?): String {
+        if (html == null) return "Password must be at least 8 characters long, include a number, an uppercase letter, and a special character."
+        val doc = Jsoup.parse(html)
+        
+        val list = doc.select("ol, ul").firstOrNull { e ->
+            val text = e.text().lowercase()
+            text.contains("character") || text.contains("special") || text.contains("number")
+        }
+        if (list != null) {
+            val items = list.select("li").map { "• " + it.text().trim() }
+            if (items.isNotEmpty()) {
+                return "Note: New Password Policy\n" + items.joinToString("\n")
+            }
+        }
+
+        val container = doc.select("div.alert, span[id*=lblRules], td, li").firstOrNull { e ->
+            val text = e.text().lowercase()
+            text.contains("must contain") || text.contains("policy")
+        }
+        if (container != null && container.text().isNotBlank()) {
+            return container.text().replace("(?i)password policy:?".toRegex(), "").trim()
+        }
+        return "Password must be at least 8 characters long, include a number, an uppercase letter, and a special character."
+    }
+
+    suspend fun fetchPasswordRules(): String {
+        return try {
+            val pageUrl = "$baseUrl/changepassword.aspx"
+            val request = Request.Builder()
+                .url(pageUrl)
+                .header("Referer", "$baseUrl/Dashboard.aspx")
+                .header("User-Agent", userAgent)
+                .build()
+            val pageHtml = client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) throw PortalSystemException("HTTP ${response.code}")
+                response.body?.string() ?: throw PortalSystemException("Empty response")
+            }
+            extractPasswordRules(pageHtml)
+        } catch (e: Exception) {
+            Log.e("PortalAuth", "Error fetching password rules: ${e.message}", e)
+            "Password must be at least 8 characters long, include a number, an uppercase letter, and a special character."
+        }
+    }
+
+    suspend fun changePassword(currentPassword: String, newPassword: String, confirmPassword: String): Result<String> {
+        return try {
+            val pageUrl = "$baseUrl/changepassword.aspx"
+            val request = Request.Builder()
+                .url(pageUrl)
+                .header("Referer", "$baseUrl/Dashboard.aspx")
+                .header("User-Agent", userAgent)
+                .build()
+            val pageHtml = client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) throw PortalSystemException("HTTP ${response.code}")
+                response.body?.string() ?: throw PortalSystemException("Empty response")
+            }
+
+            val doc = Jsoup.parse(pageHtml)
+            val form = doc.select("form").first() ?: throw PortalSystemException("Form not found on password change page")
+
+            val formBuilder = FormBody.Builder()
+            var btnName = ""
+            form.select("input, select").forEach { input ->
+                val name = input.attr("name")
+                val type = input.attr("type").lowercase()
+                var valStr = input.attr("value")
+
+                if (input.tagName() == "select") {
+                    val selected = input.select("option[selected]").first() ?: input.select("option").firstOrNull()
+                    valStr = selected?.attr("value").orEmpty()
+                    formBuilder.add(name, valStr)
+                    return@forEach
+                }
+
+                if (type == "hidden") {
+                    formBuilder.add(name, valStr)
+                } else if (name.lowercase().contains("btnchange") || name.lowercase().contains("btnsubmit") || type == "submit" || name.lowercase().contains("btn")) {
+                    if (btnName.isEmpty() && !name.lowercase().contains("cancel")) {
+                        btnName = name
+                        formBuilder.add(name, "Ok")
+                    }
+                } else if (name.lowercase().contains("old") && (type == "password" || type == "text")) {
+                    formBuilder.add(name, currentPassword)
+                } else if (name.lowercase().contains("new") && (type == "password" || type == "text")) {
+                    formBuilder.add(name, newPassword)
+                } else if (name.lowercase().contains("confirm") && (type == "password" || type == "text")) {
+                    formBuilder.add(name, confirmPassword)
+                } else if (type == "text" || type == "password") {
+                    formBuilder.add(name, valStr)
+                }
+            }
+
+            val postRequest = Request.Builder()
+                .url(pageUrl)
+                .post(formBuilder.build())
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .header("Referer", pageUrl)
+                .header("User-Agent", userAgent)
+                .build()
+
+            val responseBody = client.newCall(postRequest).execute().use { response ->
+                if (!response.isSuccessful) throw PortalSystemException("HTTP ${response.code}")
+                response.body?.string().orEmpty()
+            }
+
+            parsePasswordChangeResult(responseBody)
+        } catch (e: Exception) {
+            Log.e("PortalAuth", "Error changing password: ${e.message}", e)
+            Result.failure(if (e !is PortalSystemException) PortalSystemException(e.message ?: "Unknown error") else e)
+        }
+    }
+
+    internal fun parsePasswordChangeResult(html: String): Result<String> {
+        val doc = org.jsoup.Jsoup.parse(html)
+        
+        // 1. Look for explicit message elements on the page
+        val msgElement = doc.select(
+            "span[id*=lblMsg], span[id*=lblMessage], span[id*=lblError], [id*=ValidationSummary], [class*=ValidationSummary], " +
+            "span[id*=Validator], span[id*=cv], span[id*=rfv], span[id*=Compare], span[id*=Required], div.alert, " +
+            ".text-danger, .text-error, [class*=error], [class*=danger]"
+        ).firstOrNull { el ->
+            val style = el.attr("style").replace(" ", "").lowercase()
+            val isHidden = style.contains("display:none")
+            
+            el.text().isNotBlank() &&
+            !isHidden &&
+            !el.parents().any { it.tagName().equals("noscript", ignoreCase = true) } &&
+            !el.text().contains("javascript is disabled", ignoreCase = true)
+        }
+        
+        val extractedMessage = msgElement?.text()?.trim()
+        
+        // 2. Determine success based on the extracted message or input fields
+        val isSuccess = if (extractedMessage != null) {
+            val lowerMsg = extractedMessage.lowercase()
+            val hasSuccessKeyword = lowerMsg.contains("success") || lowerMsg.contains("changed") || lowerMsg.contains("completed")
+            val hasFailureKeyword = lowerMsg.contains("not") || 
+                                    lowerMsg.contains("fail") || 
+                                    lowerMsg.contains("incorrect") || 
+                                    lowerMsg.contains("invalid") || 
+                                    lowerMsg.contains("error") || 
+                                    lowerMsg.contains("wrong") || 
+                                    lowerMsg.contains("mismatch") ||
+                                    lowerMsg.contains("could not") ||
+                                    lowerMsg.contains("unable")
+                                    
+            hasSuccessKeyword && !hasFailureKeyword
+        } else {
+            // Check if password input fields are still present on the page.
+            // If they are present, it is highly likely the change failed.
+            val hasPasswordFields = doc.select("input[type=password]").isNotEmpty()
+            !hasPasswordFields
+        }
+        
+        return if (isSuccess) {
+            Result.success(extractedMessage ?: "Password changed successfully.")
+        } else {
+            Result.failure(PortalSystemException(extractedMessage ?: "Incorrect current password or invalid password change request."))
+        }
     }
 }

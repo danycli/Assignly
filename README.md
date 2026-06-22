@@ -3,11 +3,11 @@
   <img width="200" height="200" alt="logo" src="https://github.com/user-attachments/assets/24240133-4ae3-49c5-951c-91e247320900" />
 </p>
 
-<h1 align="center">Assignly — COMSATS Assignment Portal Client</h1>
+<h1 align="center">Assignly — COMSATS Student Portal Client</h1>
 
 <p align="center">
   A native Android client for COMSATS University Islamabad, Abbottabad Campus (CUIIT) students<br/>
-  to manage, download, and submit assignments — and view your weekly timetable — without ever opening a browser.
+  to manage academic life, track attendance, view results, and submit assignments — without ever opening a browser.
 </p>
 
 <p align="center">
@@ -20,183 +20,81 @@
 
 ---
 
-> **Battle-tested.** This app has been personally used by the developer to submit real assignments through the COMSATS student portal. Every feature has been validated in production, not just on paper.
+> **Battle-tested.** This app has been personally used by the developer to navigate academic life and submit real assignments through the COMSATS student portal. Every feature has been validated in production, not just on paper.
 
 ---
 
 ## Overview
 
-Assignly is a purpose-built Android client for the [COMSATS Student Information System (SIS)](https://sis.cuiatd.edu.pk) portal. It authenticates using your student credentials, scrapes the assignment portal, and presents everything in a clean and usable interface — with one-tap download and upload support, a full weekly timetable planner, background sync with push notifications, and automatic update detection.
+Assignly is an all-in-one Android client for the [COMSATS Student Information System (SIS)](https://sis.cuiatd.edu.pk) portal. It transforms the clunky web experience into a native mobile app — complete with a central dashboard, attendance insights, result tracking, fee management, and a smart timetable.
 
-No more squinting at a tiny browser, fighting with broken mobile web layouts, or missing deadlines buried inside a clunky table.
-
----
-
-## Features
-
-### Secure Login & Auto Sign-In
-
-- Log in using your COMSATS registration number (e.g. `SP25-BCS-001`) and password.
-- Credentials are stored using **Android EncryptedSharedPreferences** (AES-256 encryption) — never in plain text.
-- On app launch, Assignly automatically signs you in using saved credentials. No re-typing required.
-- Existing plain-text credentials from older versions are automatically migrated to encrypted storage.
-- Logout clears all saved credentials and session cookies immediately.
+No more fighting with broken mobile web layouts, missed deadlines, or forgotten lecture rooms.
 
 ---
 
-### Student Welcome Card
+## Key Features
 
-Upon logging in, a personalised card greets you with:
+### Central Academic Dashboard
 
-- Your **full name**, parsed from the portal.
-- Your **profile photo**, fetched directly from the portal.
-- A **dynamic status message** that adapts to your workload:
+The heart of the app. A unified hub that surfaces your entire academic status:
 
-| Pending Assignments | Message Tone |
-|---|---|
-| 3 or more | Sarcastic roast |
-| 1–2 | Motivational nudge |
-| None | Genuine appreciation |
-| No assignments posted yet | A gentle jab at your professors |
+- **Student Identity Card**: Shows your profile photo, registration number, program, and section.
+- **Smart Badge**: Automatically detects and highlights your **Scholarship Status**.
+- **Academic Snapshot**: At-a-glance view of your current **CGPA**, average **Attendance**, and total **Registered Credits**.
+- **Quick Shortcuts**: One-tap access to all portal modules (Timetable, Result, Fee, etc.).
 
 ---
 
-### Pending Assignments Table
+### Timetable & Class Tracker
 
-A horizontally scrollable table surfaces your currently actionable pending assignments:
+A live timetable that ensures you're never late for a lecture:
 
-| Column | Description |
-|---|---|
-| `#` | Row number |
-| `Course Title` | The course this assignment belongs to |
-| `Title` | Assignment name |
-| `Start Date` | When the assignment was posted |
-| `Deadline` | Full deadline with time |
-| `Status` | **Pending** |
-| `Download` | Tap to fetch instruction files |
-| `Submit` | Tap to pick and upload a file |
+- **Live "Now" Indicator**: Highlights the class currently in progress with a real-time progress bar.
+- **Next Class Widget**: Shows exactly what's coming up next and how long until it starts.
+- **Swipeable Days**: Smoothly navigate between Monday and Saturday.
+- **Offline Caching**: Your schedule is saved locally; check your room number even without internet.
+- **Smart Reminders**: Automated notifications before each class starts.
 
 ---
 
-### Assignment Summary Card
+### Attendance Tracker
 
-A tappable card at the top of the assignments list shows at a glance:
+Stay on top of your presence:
 
-- **Total** assignments across all states
-- **Pending** count — highlighted in yellow
-- **History** count — highlighted in green
-
-Tapping this card navigates to the full **Assignment History** screen.
+- **Aggregate Percentage**: See your total attendance average across all courses.
+- **Detailed Logs**: Drill down into any course to see a full history of presents, absences, and leaves.
+- **Attendance Insights**: Displays a sarcastic (but helpful) status message based on your attendance levels.
 
 ---
 
-### Weekly Timetable Planner
+### Assignments Management
 
-A fully integrated timetable viewer fetches your semester schedule directly from the portal:
+Manage your submissions with ease:
 
-- **Swipe navigation** — swipe left and right to smoothly move between days of the week.
-- **Pill-style day selector** — tap Mon through Sat to jump to any day. The current day is automatically selected on open.
-- **Smart HTML parsing** — extracts clean structured data from the portal's raw timetable, including multi-word lab names (e.g. "DLD Microprocessor Lab", "Physics Lab").
-- **Compact class cards** showing course name, session type (Lecture/Lab), time, room, and instructor.
-- **Live "Now" indicator** — highlights the class currently in progress.
-- **Next Class widget** — shows your upcoming class at a glance when viewing today's schedule.
-- **Offline caching** — timetable data is cached locally so it loads instantly on subsequent opens.
-- **Performance optimised** — pre-grouped data, memoized computations, and keyed lists for buttery smooth scrolling.
+- **Clean Search & Filters**: Quickly find assignments by subject or filter by **Due Today**, **Next 3 Days**, or **Next 7 Days**.
+- **Long-Press Actions**: Copy titles or jump directly to the course portal via a context menu.
+- **Instruction Downloads**: One-tap fetch for instruction files (handles redirects and PostBack triggers).
+- **Flexible Uploads**: Pick any file and upload with background support. Refresh is automatic.
+- **Submission History**: A dedicated screen for submitted and closed assignments with instructor feedback.
 
 ---
 
-### Download Instruction Files
+### Academic Results & Marks
 
-- Tap **Download** on any assignment to fetch instruction files attached by your professor.
-- A dialog lists all available files, each with its own **Download** button.
-- Files are saved to a location of your choice via Android's native file picker.
-- Handles both direct file URLs and **ASP.NET PostBack-based** download triggers.
-- Follows redirect chains up to 6 hops deep to resolve the actual file.
-- Detects and skips HTML error pages masquerading as valid downloads.
+Check your performance without the stress:
 
----
-
-### Submit / Upload Assignments
-
-- Tap **Upload File** on any pending assignment to open the file picker.
-- Accepts any file type — the portal supports `.zip`, `.rar`, `.doc`, `.docx`, and `.pdf`.
-- Handles both standard form submissions and ASP.NET PostBack-based upload flows.
-- Preserves the original file extension when uploading.
-- On success, **automatically refreshes** the assignment list so your submission is immediately reflected.
-- Provides clear error messages for: wrong file format, file too large, assignment closed, network failure, or server timeout.
-- Upload timeout is **90 seconds**, with retry logic for transient network errors.
+- **Result History**: View your GPA/CGPA and course grades for every completed semester.
+- **Internal Marks**: Real-time view of Sessional 1, Sessional 2, Quizzes, and Assignments marks.
+- **Marks Notifications**: Get notified the moment a professor uploads a new sessional or quiz result.
 
 ---
 
-### Assignment History Screen
+### Secure & Private
 
-A dedicated screen lists submitted items and missed closed submissions:
-
-- Shows **course name**, **assignment title**, **deadline**, and **submission state**.
-- Missed deadlines appear with a **Not Submitted** tag.
-- Colour-coded **Open / Closed** status based on a live deadline comparison.
-- If the deadline is still open, a **"Change File"** button lets you re-upload a corrected submission.
-- A **"Download Instructions"** button remains available regardless of deadline status.
-- Instructor feedback is displayed when available.
-
----
-
-### Background Sync & Push Notifications
-
-Assignly works even when you're not looking:
-
-- **Periodic background sync** via WorkManager fetches new assignments every 6 hours (configurable in settings).
-- **New assignment alerts** — push notifications for newly posted assignments you haven't seen yet.
-- **Deadline reminders** — automatic reminders at 24 hours, 6 hours, and 1 hour before each deadline.
-- **Upload & download progress** — notification channels for ongoing file transfers.
-- **Smart notification permission flow** — prompts for notification access on first launch (Android 13+), and gently re-prompts on the 3rd app open of the day if notifications are still disabled.
-- All notification channels are individually configurable in app settings.
-
----
-
-### Automatic Update Detection
-
-- Checks the **GitHub Releases API** for newer versions using version code tags (e.g. `vc12`).
-- **In-app update dialog** — shown every time you open the app when a newer version is available, with a direct link to download.
-- **Background update notification** — fires once per day via the background sync worker as a passive reminder.
-- Supports update download via the [Assignly website](https://assignly-web.vercel.app/) with automatic fallback to GitHub releases.
-
----
-
-### Refresh
-
-Hit the refresh icon in the top bar at any time to re-fetch your assignments and timetable from the portal. Profile photo and student name are also re-synced on refresh.
-
----
-
-### Loading Skeletons
-
-Instead of a blank screen or a spinner, Assignly shows **animated shimmer skeleton screens** while data loads — with separate skeleton layouts for the Pending and Historical screens so transitions feel natural.
-
----
-
-### Settings
-
-A dedicated settings screen lets you configure:
-
-- **Background sync** toggle and interval (1–24 hours)
-- **Notification preferences** — independently toggle assignment alerts, deadline reminders, upload notifications, and update notifications
-- **Download behaviour** — ask every time, or download directly
-- **Theme mode** — Light, Dark, or follow System default
-
----
-
-### Network Resilience
-
-- Automatic **retry with exponential backoff** for transient `IOException` errors (up to 3 attempts).
-- Login timeout: **45 seconds**. Upload timeout: **90 seconds**.
-- Descriptive error messages distinguish between: timeout, no internet, wrong credentials, CAPTCHA triggered, and generic server errors.
-
----
-
-### CAPTCHA Detection
-
-If the COMSATS portal triggers a CAPTCHA (e.g. after too many failed attempts), Assignly detects this and shows a clear message advising you to log in via browser first to clear it.
+- **Biometric App Lock**: Secure your academic data with Fingerprint/Face ID.
+- **Encrypted Storage**: Credentials are stored using **Android AES-256 encryption**.
+- **Password Management**: Change your portal password directly from the app with built-in rule validation.
+- **Session Sync**: Smart WebView session syncing for CAPTCHA handling and login persistence.
 
 ---
 
@@ -210,37 +108,9 @@ If the COMSATS portal triggers a CAPTCHA (e.g. after too many failed attempts), 
 | HTML Parsing | Jsoup 1.18 |
 | Credential Storage | AndroidX Security Crypto (EncryptedSharedPreferences) |
 | Background Work | AndroidX WorkManager |
+| Biometrics | AndroidX Biometric |
 | Build System | Gradle (Kotlin DSL) |
-| Min SDK | Android 8.0 (API 26) |
 | Target SDK | Android 15 (API 35) |
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- Android Studio Hedgehog or newer
-- JDK 21 (configured via Gradle toolchain)
-- An active COMSATS student account at [sis.cuiatd.edu.pk](https://sis.cuiatd.edu.pk)
-
-### Build & Run
-
-```bash
-git clone https://github.com/danycli/assignmentchecker.git
-cd assignmentchecker
-./gradlew assembleDebug
-```
-
-Or open the project in Android Studio and hit **Run**.
-
-### Release Build
-
-```bash
-./gradlew assembleRelease
-```
-
-Release builds enable R8 minification and resource shrinking. Android `Log` calls are stripped via ProGuard rules.
 
 ---
 
@@ -248,51 +118,37 @@ Release builds enable R8 minification and resource shrinking. Android `Log` call
 
 ```
 app/src/main/java/com/danycli/assignmentchecker/
-├── MainActivity.kt              # App entry, navigation, update & notification dialogs
-├── MainViewModel.kt             # ViewModel bridging use cases to UI
-├── PortalRepository.kt          # All networking: login, fetch, upload, download, timetable
-├── PortalUseCases.kt            # Clean architecture use cases
+├── MainActivity.kt              # App entry, biometric lock & navigation
+├── MainViewModel.kt             # Shared state & portal communication bridge
+├── PortalRepository.kt          # Networking layer (Login, Scrapers, Uploads)
+├── PortalUseCases.kt            # Clean architecture business logic
 │
-├── Assignment.kt                # Assignment data model, status enum, deadline parsing
-├── Timetable.kt                 # TimetableLecture data model
-├── SettingsModels.kt            # Settings enums (DownloadBehavior)
-├── ThemeMode.kt                 # Theme mode enum
-├── UiModels.kt                  # Shared UI models
+├── AppSettingsStore.kt          # User preferences & theme settings
+├── CredentialsStore.kt          # Encrypted credential persistence
+├── AssignmentCacheStore.kt      # Offline caches for all portal data
+├── TimetableCacheStore.kt       # (Attendance, Marks, Grades, Profile, etc.)
 │
-├── AppSettingsStore.kt          # App preferences (sync, notifications, theme)
-├── AssignmentCacheStore.kt      # Offline assignment cache
-├── TimetableCacheStore.kt       # Offline timetable cache
-├── CredentialsStore.kt          # Encrypted credential storage
-├── NotificationPromptStore.kt   # Daily open tracking & notification prompt state
-├── UpdateNotificationStore.kt   # Update notification dedup
+├── AssignmentNotifications.kt   # System notifications & alerts
+├── BackgroundSyncWork.kt        # Periodic data refresh worker
+├── DownloadWork.kt              # Background file download worker
+├── UploadWork.kt                # Background submission worker
 │
-├── AssignmentNotifications.kt   # Notification channels & assignment alerts
-├── AssignmentReminderWorker.kt  # Deadline reminder WorkManager worker
-├── BackgroundSyncWork.kt        # Periodic sync scheduler & worker
-├── DownloadWork.kt              # Background download worker
-├── UploadWork.kt                # Background upload worker
-├── DownloadQueueStore.kt        # Download queue persistence
-├── UploadQueueStore.kt          # Upload queue persistence
-├── DownloadNotifier.kt          # Download progress notifications
-├── UploadNotifier.kt            # Upload progress notifications
-│
-├── AppUpdateChecker.kt          # GitHub Releases API version checker
-├── UpdateNavigationManager.kt   # Update download URL resolution
-├── UpdateNotifier.kt            # Update available notification
-├── NotificationGate.kt          # Notification permission check utility
-│
-├── SecurityUtils.kt             # Crypto utilities
-├── IoRetry.kt                   # Retry with backoff helper
-├── UiUtils.kt                   # UI constants & helpers
-├── SettingsScreen.kt            # Settings UI
+├── AppUpdateChecker.kt          # GitHub Releases version checker
+├── SecurityUtils.kt             # Crypto & Biometric helpers
 │
 └── ui/
-    ├── AssignmentsScreen.kt     # Pending assignments UI
-    ├── HistoryScreen.kt         # Assignment history UI
-    ├── LoginScreen.kt           # Login screen UI
-    ├── TimetableScreen.kt       # Timetable bottom sheet UI
-    ├── CommonUi.kt              # Shared UI components & skeletons
-    └── theme/                   # Material 3 theming
+    ├── DashboardScreen.kt       # Central hub (inside AssignmentsScreen.kt)
+    ├── AssignmentsScreen.kt     # Pending assignments & filters
+    ├── HistoryScreen.kt         # Submitted assignment logs
+    ├── TimetableScreen.kt       # Live class schedule
+    ├── AttendanceScreen.kt      # Attendance logs & insights
+    ├── GradesScreen.kt          # Result history (GPA/CGPA)
+    ├── MarksScreen.kt           # Internal sessionals/quizzes marks
+    ├── FeeScreen.kt             # Fee status & challan downloads
+    ├── ProfileScreen.kt         # Detailed student information
+    ├── LoginScreen.kt           # Portal authentication
+    ├── AppLockScreen.kt         # Biometric security UI
+    └── theme/                   # Material 3 design system
 ```
 
 ---
@@ -306,7 +162,7 @@ SP25-BCS-001
 └─────────── Session (SP = Spring, FA = Fall + 2-digit year)
 ```
 
-The app automatically normalises your input to uppercase and parses the three parts separately to populate the portal's session dropdown, program dropdown, and roll number field.
+The app automatically normalises your input and handles the portal's complex session selection logic for you.
 
 ---
 
@@ -318,6 +174,6 @@ This is an **unofficial third-party client** for the COMSATS SIS portal. It is n
 
 ## Author
 
-Built by **danycli** — a student who got tired of the portal's web experience and decided to fix it.
+Built by **danycli** — because academic life is hard enough without a bad website.
 
 *Made with frustration, caffeine, and Jetpack Compose.*

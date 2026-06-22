@@ -42,9 +42,9 @@ class DownloadWorker(
                 is LoginResult.Success -> {
                     when (val downloadResult = repository.downloadAssignment(downloadLink)) {
                         is DownloadResult.Success -> {
-                            val saved = writeBytesToDownloads(applicationContext, downloadResult.fileName, downloadResult.bytes)
-                            if (saved) {
-                                DownloadQueueStore.updateStatus(applicationContext, downloadId, DownloadQueueStatus.SUCCESS)
+                            val savedUri = writeBytesToDownloads(applicationContext, downloadResult.fileName, downloadResult.bytes)
+                            if (savedUri != null) {
+                                DownloadQueueStore.updateStatus(applicationContext, downloadId, DownloadQueueStatus.SUCCESS, fileUri = savedUri)
                                 DownloadNotifier.showSuccess(applicationContext, downloadId, fileName)
                                 Result.success()
                             } else {
@@ -122,7 +122,6 @@ object DownloadWorkScheduler {
             .setConstraints(
                 Constraints.Builder()
                     .setRequiredNetworkType(NetworkType.CONNECTED)
-                    .setRequiresBatteryNotLow(true)
                     .build()
             )
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 20, TimeUnit.SECONDS)

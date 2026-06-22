@@ -9,7 +9,6 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -431,6 +430,7 @@ fun CaptchaWebViewDialog(
     onCaptchaSolved: () -> Unit
 ) {
     val context = LocalContext.current
+    val showMessage = LocalShowMessage.current
     val portalBaseUrl = remember { viewModel.getPortalBaseUrl() }
     val loginUrl = remember { viewModel.getPortalLoginUrl() }
     val portalHost = remember(loginUrl) { runCatching { loginUrl.toHttpUrl().host }.getOrDefault("") }
@@ -529,7 +529,7 @@ fun CaptchaWebViewDialog(
         webViewRef.value?.stopLoading()
         webViewRef.value?.loadUrl("about:blank")
         if (showToast && !message.isNullOrBlank()) {
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            showMessage(message)
         }
         onCaptchaSolved()
     }

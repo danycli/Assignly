@@ -21,6 +21,8 @@ open class MainViewModel : ViewModel() {
     private val loadTimetableUseCase = LoadTimetableUseCase(repository)
     private val loadEnrolledCoursesUseCase = LoadEnrolledCoursesUseCase(repository)
     private val loadCourseFilesUseCase = LoadCourseFilesUseCase(repository)
+    private val changePasswordUseCase = ChangePasswordUseCase(repository)
+    private val fetchPasswordRulesUseCase = FetchPasswordRulesUseCase(repository)
 
     open suspend fun loadDashboardData(): DashboardLoadResult = loadDashboardUseCase()
 
@@ -31,6 +33,12 @@ open class MainViewModel : ViewModel() {
     open suspend fun loadEnrolledCourses(): EnrolledCoursesData = loadEnrolledCoursesUseCase()
 
     open suspend fun loadCourseFiles(courseCode: String, courseTitle: String): List<CourseFile> = loadCourseFilesUseCase(courseCode, courseTitle)
+
+    open suspend fun changePassword(currentPass: String, newPass: String, confirmPass: String): Result<String> =
+        changePasswordUseCase(currentPass, newPass, confirmPass)
+
+    open suspend fun fetchPasswordRules(): String =
+        fetchPasswordRulesUseCase()
 
     open suspend fun loadAttendanceSummary(resolvedCodes: Map<String, String>? = null): List<AttendanceSummary> = withContext(Dispatchers.IO) {
         repository.fetchAttendanceSummary(resolvedCodes)

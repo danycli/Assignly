@@ -19,14 +19,38 @@ object NotificationGate {
         return NotificationManagerCompat.from(context).areNotificationsEnabled()
     }
 
+    fun canScheduleExactAlarms(context: Context): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+            alarmManager.canScheduleExactAlarms()
+        } else {
+            true
+        }
+    }
+
     fun getAppIconBitmap(context: Context): android.graphics.Bitmap? {
         return runCatching {
-            val drawable = ContextCompat.getDrawable(context, R.mipmap.ic_launcher) ?: return null
-            val size = (192 * context.resources.displayMetrics.density).toInt()
+            val size = (64 * context.resources.displayMetrics.density).toInt()
             val bitmap = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
             val canvas = android.graphics.Canvas(bitmap)
-            drawable.setBounds(0, 0, size, size)
-            drawable.draw(canvas)
+            
+            val paint = android.graphics.Paint().apply {
+                color = 0xFF004643.toInt()
+                isAntiAlias = true
+                style = android.graphics.Paint.Style.FILL
+            }
+            val radius = size / 2f
+            canvas.drawCircle(radius, radius, radius, paint)
+            
+            val drawable = ContextCompat.getDrawable(context, R.drawable.ic_notification) ?: return null
+            val iconSize = (size * 0.55f).toInt()
+            val margin = (size - iconSize) / 2
+            
+            val wrapped = androidx.core.graphics.drawable.DrawableCompat.wrap(drawable).mutate()
+            androidx.core.graphics.drawable.DrawableCompat.setTint(wrapped, android.graphics.Color.WHITE)
+            
+            wrapped.setBounds(margin, margin, margin + iconSize, margin + iconSize)
+            wrapped.draw(canvas)
             bitmap
         }.getOrNull()
     }

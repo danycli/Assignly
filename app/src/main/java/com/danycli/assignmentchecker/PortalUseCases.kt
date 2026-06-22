@@ -114,3 +114,19 @@ class LoadCourseFilesUseCase(private val repository: PortalRepository) {
         }
     }
 }
+
+class ChangePasswordUseCase(private val repository: PortalRepository) {
+    suspend operator fun invoke(currentPass: String, newPass: String, confirmPass: String): Result<String> {
+        return withContext(Dispatchers.IO) {
+            repository.changePassword(currentPass, newPass, confirmPass)
+        }
+    }
+}
+
+class FetchPasswordRulesUseCase(private val repository: PortalRepository) {
+    suspend operator fun invoke(): String {
+        return withContext(Dispatchers.IO) {
+            repository.fetchPasswordRules()
+        }
+    }
+}

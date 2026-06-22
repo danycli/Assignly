@@ -14,7 +14,8 @@ data class QueuedDownload(
     val downloadLink: String,
     val status: DownloadQueueStatus,
     val lastError: String?,
-    val createdAtEpochMs: Long
+    val createdAtEpochMs: Long,
+    val fileUri: String? = null
 )
 
 object DownloadQueueStore {
@@ -47,9 +48,17 @@ object DownloadQueueStore {
         saveAll(context, updated)
     }
 
-    fun updateStatus(context: Context, id: String, status: DownloadQueueStatus, lastError: String? = null) {
+    fun updateStatus(context: Context, id: String, status: DownloadQueueStatus, lastError: String? = null, fileUri: String? = null) {
         val updated = getAll(context).map { download ->
-            if (download.id == id) download.copy(status = status, lastError = lastError) else download
+            if (download.id == id) {
+                download.copy(
+                    status = status,
+                    lastError = lastError,
+                    fileUri = fileUri ?: download.fileUri
+                )
+            } else {
+                download
+            }
         }
         saveAll(context, updated)
     }
@@ -77,6 +86,7 @@ object DownloadQueueStore {
                         put("status", download.status.name)
                         put("lastError", download.lastError ?: JSONObject.NULL)
                         put("createdAtEpochMs", download.createdAtEpochMs)
+                        put("fileUri", download.fileUri ?: JSONObject.NULL)
                     }
                 )
             }
@@ -87,6 +97,13 @@ object DownloadQueueStore {
             .apply()
     }
 
+    fun clear(context: Context) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .apply()
+    }
+
     private fun JSONObject.toQueuedDownload(): QueuedDownload {
         return QueuedDownload(
             id = optString("id"),
@@ -94,7 +111,8 @@ object DownloadQueueStore {
             downloadLink = optString("downloadLink"),
             status = runCatching { DownloadQueueStatus.valueOf(optString("status")) }.getOrDefault(DownloadQueueStatus.QUEUED),
             lastError = optString("lastError").ifBlank { null }.takeUnless { it == "null" },
-            createdAtEpochMs = optLong("createdAtEpochMs", 0L)
+            createdAtEpochMs = optLong("createdAtEpochMs", 0L),
+            fileUri = optString("fileUri").ifBlank { null }.takeUnless { it == "null" }
         )
     }
 }

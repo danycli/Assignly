@@ -88,7 +88,10 @@ class UploadWorker(
     }
 
     private fun persistUriToTempFile(uri: Uri, uploadId: String): File {
-        val tempFile = File(applicationContext.cacheDir, "queued_upload_$uploadId.bin")
+        val originalName = getFileNameFromUri(applicationContext, uri) ?: "queued_upload"
+        val ext = originalName.substringAfterLast('.', "bin")
+        val safeExt = ext.replace("[\\\\/:*?\"<>|]".toRegex(), "_")
+        val tempFile = File(applicationContext.cacheDir, "queued_upload_${uploadId}.${safeExt}")
         applicationContext.contentResolver.openInputStream(uri).use { input ->
             requireNotNull(input) { "Input stream unavailable." }
             tempFile.outputStream().use { output -> input.copyTo(output) }
@@ -160,7 +163,6 @@ object UploadWorkScheduler {
             .setConstraints(
                 Constraints.Builder()
                     .setRequiredNetworkType(NetworkType.CONNECTED)
-                    .setRequiresBatteryNotLow(true)
                     .build()
             )
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 20, TimeUnit.SECONDS)

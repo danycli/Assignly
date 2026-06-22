@@ -89,6 +89,13 @@ object UploadQueueStore {
             .apply()
     }
 
+    fun clear(context: Context) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .apply()
+    }
+
     private fun JSONObject.toQueuedUpload(): QueuedUpload {
         return QueuedUpload(
             id = optString("id"),

@@ -2,7 +2,6 @@ package com.danycli.assignmentchecker.ui
 
 import android.graphics.Bitmap
 import android.net.Uri
-import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -50,6 +49,7 @@ import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Assignment
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -103,6 +103,7 @@ fun DashboardScreen(
     onNavigateToFee: () -> Unit = {},
     onNavigateToCourses: () -> Unit = {},
     onNavigateToAssignments: () -> Unit = {},
+    onNavigateToDownloads: () -> Unit = {},
     lastSyncedMs: Long = 0L,
     studentProfile: StudentProfile? = null,
     enrolledCourses: List<EnrolledCourse> = emptyList(),
@@ -116,6 +117,9 @@ fun DashboardScreen(
         loggedInStudentPhoto?.let { bytes ->
             runCatching { android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }.getOrNull()
         }
+    }
+    val completedSemesters = remember(gpaSummary) {
+        com.danycli.assignmentchecker.countCompletedSemesters(gpaSummary.semesters)
     }
 
     Scaffold(
@@ -177,6 +181,7 @@ fun DashboardScreen(
                         loggedInStudentName = loggedInStudentName,
                         profileBitmap = profileBitmap,
                         enrolledCoursesSemester = enrolledCoursesSemester,
+                        completedSemesters = completedSemesters,
                         onNavigateToProfile = onNavigateToProfile
                     )
                 }
@@ -184,8 +189,11 @@ fun DashboardScreen(
                 // 2. Academic Snapshot Section
                 item {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         val cgpaStr = if (gpaSummary.cgpa > 0.0) String.format(Locale.US, "%.2f", gpaSummary.cgpa) else "N/A"
                         
@@ -205,10 +213,10 @@ fun DashboardScreen(
                         val totalCredits = enrolledCourses.sumOf { parseCreditHoursValue(it.creditHours) }
                         val creditsStr = if (enrolledCourses.isNotEmpty()) formatCreditHours(totalCredits) else "N/A"
 
-                        SnapshotCard("CGPA", cgpaStr, Modifier.weight(1f))
-                        SnapshotCard("Attendance", attendanceStr, Modifier.weight(1f))
-                        SnapshotCard("Registered", coursesStr, Modifier.weight(1f))
-                        SnapshotCard("Credits", creditsStr, Modifier.weight(1f))
+                        SnapshotCard("CGPA", cgpaStr, Modifier.width(100.dp), onClick = onNavigateToGrades)
+                        SnapshotCard("Attendance", attendanceStr, Modifier.width(100.dp), onClick = onNavigateToAttendance)
+                        SnapshotCard("Registered", coursesStr, Modifier.width(100.dp), onClick = onNavigateToCourses)
+                        SnapshotCard("Credits", creditsStr, Modifier.width(100.dp), onClick = onNavigateToCourses)
                     }
                 }
 
@@ -234,7 +242,7 @@ fun DashboardScreen(
                         ) {
                             ShortcutCard("Timetable", Icons.Default.CalendarMonth, onNavigateToTimetable, Modifier.weight(1f))
                             ShortcutCard("Attendance", Icons.Default.Analytics, onNavigateToAttendance, Modifier.weight(1f))
-                            ShortcutCard("Grades", Icons.Default.School, onNavigateToGrades, Modifier.weight(1f))
+                            ShortcutCard("Result", Icons.Default.School, onNavigateToGrades, Modifier.weight(1f))
                         }
                         Spacer(modifier = Modifier.height(4.dp))
                         Row(
@@ -251,7 +259,7 @@ fun DashboardScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             ShortcutCard("Assignments", Icons.Default.Assignment, onNavigateToAssignments, Modifier.weight(1f))
-                            Spacer(modifier = Modifier.weight(1f))
+                            ShortcutCard("Downloads", Icons.Default.Download, onNavigateToDownloads, Modifier.weight(1f))
                             Spacer(modifier = Modifier.weight(1f))
                         }
                     }
@@ -663,6 +671,7 @@ fun PendingAssignmentRow(
     val clipboardManager = LocalClipboardManager.current
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
+    val showMessage = LocalShowMessage.current
     val canDownload = assignment.downloadLink.isNotEmpty()
     val canUpload = assignment.submitLink.isNotEmpty()
     val isNotSubmittedClosed = assignment.status == AssignmentStatus.NOT_SUBMITTED_CLOSED
@@ -756,7 +765,7 @@ fun PendingAssignmentRow(
                 onClick = {
                     menuExpanded = false
                     clipboardManager.setText(AnnotatedString(assignment.assignmentTitle))
-                    Toast.makeText(context, "Title copied", Toast.LENGTH_SHORT).show()
+                    showMessage("Title copied")
                 }
             )
             DropdownMenuItem(
@@ -800,6 +809,7 @@ fun StudentIdentityCard(
     loggedInStudentName: String?,
     profileBitmap: Bitmap?,
     enrolledCoursesSemester: String,
+    completedSemesters: Int,
     onNavigateToProfile: () -> Unit
 ) {
     val resolvedName = profile?.name?.takeIf { it.isNotBlank() } ?: loggedInStudentName?.takeIf { it.isNotBlank() } ?: "Student"
@@ -885,8 +895,15 @@ fun StudentIdentityCard(
                         overflow = TextOverflow.Ellipsis
                     )
                     Spacer(modifier = Modifier.height(2.dp))
+                    val cleanSection = resolvedSection.replace("Section", "", ignoreCase = true).trim()
+                    val currentSemester = completedSemesters + 1
+                    val semesterSectionStr = if (currentSemester > 0 && cleanSection.isNotEmpty()) {
+                        "$currentSemester$cleanSection"
+                    } else {
+                        resolvedSection
+                    }
                     Text(
-                        text = "$resolvedProgram • $resolvedSection",
+                        text = "$resolvedProgram • $semesterSectionStr",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -993,41 +1010,60 @@ fun ShortcutCard(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SnapshotCard(
     label: String,
     value: String,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null
 ) {
-    Card(
-        modifier = modifier
-            .shadow(2.dp, shape = RoundedCornerShape(12.dp)),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 10.dp, horizontal = 4.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally
+    if (onClick != null) {
+        Card(
+            onClick = onClick,
+            modifier = modifier
+                .shadow(2.dp, shape = RoundedCornerShape(12.dp)),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
         ) {
-            Text(
-                text = label,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                textAlign = TextAlign.Center
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = value,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.ExtraBold,
-                color = MaterialTheme.colorScheme.primary,
-                textAlign = TextAlign.Center
-            )
+            SnapshotCardContent(label, value)
         }
+    } else {
+        Card(
+            modifier = modifier
+                .shadow(2.dp, shape = RoundedCornerShape(12.dp)),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            SnapshotCardContent(label, value)
+        }
+    }
+}
+
+@Composable
+private fun SnapshotCardContent(label: String, value: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 10.dp, horizontal = 4.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = label,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+            text = value,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.ExtraBold,
+            color = MaterialTheme.colorScheme.primary,
+            textAlign = TextAlign.Center
+        )
     }
 }
 
