@@ -214,13 +214,31 @@ fun fetchAppUpdateInfo(context: Context, force: Boolean = false): AppUpdateInfo?
                 putString(KEY_CACHED_URL, result.info.releaseUrl)
                 putString(KEY_CACHED_ETAG, result.etag)
                 putLong(KEY_LAST_CHECK_TIME, now)
+                
+                val currentCode = com.danycli.assignmentchecker.BuildConfig.VERSION_CODE
+                val dynamicKey = "dynamic_version_name_$currentCode"
+                if (!prefs.contains(dynamicKey)) {
+                    putString(dynamicKey, result.info.displayLabel)
+                }
+                
                 apply()
             }
             result.info
         }
         is FetchResult.NotModified -> {
             // Update last check time but keep other cached data
-            prefs.edit().putLong(KEY_LAST_CHECK_TIME, now).apply()
+            prefs.edit().apply {
+                putLong(KEY_LAST_CHECK_TIME, now)
+                
+                val currentCode = com.danycli.assignmentchecker.BuildConfig.VERSION_CODE
+                val dynamicKey = "dynamic_version_name_$currentCode"
+                val cachedLabel = prefs.getString(KEY_CACHED_LABEL, null)
+                if (!prefs.contains(dynamicKey) && cachedLabel != null) {
+                    putString(dynamicKey, cachedLabel)
+                }
+                
+                apply()
+            }
             val cachedCode = prefs.getInt(KEY_CACHED_VERSION, -1)
             val cachedLabel = prefs.getString(KEY_CACHED_LABEL, null)
             val cachedUrl = prefs.getString(KEY_CACHED_URL, null)
@@ -230,4 +248,11 @@ fun fetchAppUpdateInfo(context: Context, force: Boolean = false): AppUpdateInfo?
         }
         else -> null
     }
+}
+
+fun getDynamicVersionName(context: Context): String {
+    val prefs = context.getSharedPreferences(UPDATE_PREFS, Context.MODE_PRIVATE)
+    val currentCode = com.danycli.assignmentchecker.BuildConfig.VERSION_CODE
+    val dynamicKey = "dynamic_version_name_$currentCode"
+    return prefs.getString(dynamicKey, com.danycli.assignmentchecker.BuildConfig.VERSION_NAME) ?: com.danycli.assignmentchecker.BuildConfig.VERSION_NAME
 }

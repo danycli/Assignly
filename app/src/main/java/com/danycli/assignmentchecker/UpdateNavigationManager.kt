@@ -10,34 +10,15 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 object UpdateNavigationManager {
-    private const val PRIMARY_UPDATE_URL = "https://www.assignly.site/"
-    private const val BACKUP_UPDATE_URL = "https://assignly-web.vercel.app/"
-    private const val FALLBACK_GITHUB_URL = "https://github.com/danycli/Assignly"
+    private const val PRIMARY_UPDATE_URL = "https://www.assignly.site/download"
 
     suspend fun launchUpdateDownload(
         context: Context,
         githubReleaseUrl: String?,
         onShowMessage: (String) -> Unit = {}
     ) {
-        val primaryAvailable = withContext(Dispatchers.IO) {
-            isWebsiteAvailable(PRIMARY_UPDATE_URL)
-        }
-
-        val targetUrl = if (primaryAvailable) {
-            PRIMARY_UPDATE_URL
-        } else {
-            val backupAvailable = withContext(Dispatchers.IO) {
-                isWebsiteAvailable(BACKUP_UPDATE_URL)
-            }
-            if (backupAvailable) {
-                BACKUP_UPDATE_URL
-            } else {
-                githubReleaseUrl ?: FALLBACK_GITHUB_URL
-            }
-        }
-
         try {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl)).apply {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(PRIMARY_UPDATE_URL)).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
@@ -46,25 +27,6 @@ object UpdateNavigationManager {
             withContext(Dispatchers.Main) {
                 onShowMessage("Unable to open update link.")
             }
-        }
-    }
-
-    private fun isWebsiteAvailable(url: String): Boolean {
-        var connection: HttpURLConnection? = null
-        return try {
-            connection = (URL(url).openConnection() as? HttpURLConnection) ?: return false
-            connection.requestMethod = "HEAD" // Lightweight check
-            connection.connectTimeout = 5_000
-            connection.readTimeout = 5_000
-            connection.instanceFollowRedirects = true
-            
-            val responseCode = connection.responseCode
-            responseCode in listOf(200, 301, 302)
-        } catch (e: Exception) {
-            Log.w("UpdateNavigation", "Website availability check failed: ${e.message}")
-            false
-        } finally {
-            connection?.disconnect()
         }
     }
 }

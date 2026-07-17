@@ -76,6 +76,7 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AnalyticsManager.initialize(this)
         enableEdgeToEdge()
         if (BuildConfig.DEBUG || BuildConfig.BUILD_TYPE == "benchmark") {
             jankStats = JankStats.createAndTrack(window) { frameData ->
@@ -222,6 +223,160 @@ private fun AppEntry() {
     }
 }
 
+@Composable
+fun FeeChallanPrintDialog(
+    url: String,
+    cookiesList: List<String>,
+    fileName: String,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    var webViewRef by remember { mutableStateOf<android.webkit.WebView?>(null) }
+    var isSaving by remember { mutableStateOf(false) }
+
+    LaunchedEffect(url, cookiesList) {
+        val cookieManager = android.webkit.CookieManager.getInstance()
+        cookieManager.setAcceptCookie(true)
+        for (cookie in cookiesList) {
+            cookieManager.setCookie(url, cookie)
+        }
+        cookieManager.flush()
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close")
+                    }
+                    Text(
+                        text = "Fee Challan",
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.weight(1f).padding(horizontal = 16.dp)
+                    )
+                    Button(
+                        onClick = {
+                            webViewRef?.let { webView ->
+                                isSaving = true
+                                saveWebViewToPdf(
+                                    context = context,
+                                    webView = webView,
+                                    fileName = fileName,
+                                    onSuccess = {
+                                        isSaving = false
+                                        android.widget.Toast.makeText(context, "Saved to Downloads!", android.widget.Toast.LENGTH_SHORT).show()
+                                        onDismiss()
+                                    },
+                                    onError = { e ->
+                                        isSaving = false
+                                        android.widget.Toast.makeText(context, "Failed to save: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                                    }
+                                )
+                            }
+                        },
+                        enabled = !isSaving
+                    ) {
+                        if (isSaving) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(if (isSaving) "Saving..." else "Save to Downloads")
+                    }
+                }
+                androidx.compose.ui.viewinterop.AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { viewContext ->
+                        android.webkit.WebView(viewContext).apply {
+                            webViewRef = this
+                            settings.javaScriptEnabled = true
+                            settings.builtInZoomControls = true
+                            settings.displayZoomControls = false
+                            settings.useWideViewPort = true
+                            settings.loadWithOverviewMode = true
+                            webViewClient = android.webkit.WebViewClient()
+                            loadUrl(url)
+                        }
+                    },
+                    update = {
+                        webViewRef = it
+                    }
+                )
+            }
+        }
+    }
+}
+
+fun saveWebViewToPdf(
+    context: Context,
+    webView: android.webkit.WebView,
+    fileName: String,
+    onSuccess: (String) -> Unit,
+    onError: (Exception) -> Unit
+) {
+    val printAdapter = webView.createPrintDocumentAdapter("FeeChallan")
+    val printAttributes = android.print.PrintAttributes.Builder()
+        .setMediaSize(android.print.PrintAttributes.MediaSize.ISO_A4.asLandscape())
+        .setResolution(android.print.PrintAttributes.Resolution("pdf", "pdf", 600, 600))
+        .setMinMargins(android.print.PrintAttributes.Margins.NO_MARGINS)
+        .build()
+
+    val tempFile = java.io.File.createTempFile("FeeChallan_", ".pdf", context.cacheDir)
+    val descriptor = try {
+        android.os.ParcelFileDescriptor.open(tempFile, android.os.ParcelFileDescriptor.MODE_READ_WRITE or android.os.ParcelFileDescriptor.MODE_CREATE or android.os.ParcelFileDescriptor.MODE_TRUNCATE)
+    } catch (e: Exception) {
+        onError(e)
+        return
+    }
+
+    printAdapter.onLayout(null, printAttributes, null, object : android.print.CustomLayoutResultCallback() {
+        override fun onLayoutFinished(info: android.print.PrintDocumentInfo, changed: Boolean) {
+            printAdapter.onWrite(arrayOf(android.print.PageRange.ALL_PAGES), descriptor, android.os.CancellationSignal(), object : android.print.CustomWriteResultCallback() {
+                override fun onWriteFinished(pages: Array<android.print.PageRange>) {
+                    super.onWriteFinished(pages)
+                    try {
+                        descriptor.close()
+                        val bytes = tempFile.readBytes()
+                        tempFile.delete()
+                        val uriString = writeBytesToDownloads(context, fileName, bytes)
+                        if (uriString != null) {
+                            onSuccess(uriString)
+                        } else {
+                            onError(Exception("Failed to write bytes to downloads directory"))
+                        }
+                    } catch (e: Exception) {
+                        onError(e)
+                    }
+                }
+
+                override fun onWriteFailed(error: CharSequence?) {
+                    super.onWriteFailed(error)
+                    try { descriptor.close() } catch (e: Exception) {}
+                    tempFile.delete()
+                    onError(Exception(error?.toString() ?: "Unknown write error"))
+                }
+            })
+        }
+
+        override fun onLayoutFailed(error: CharSequence?) {
+            super.onLayoutFailed(error)
+            try { descriptor.close() } catch (e: Exception) {}
+            tempFile.delete()
+            onError(Exception(error?.toString() ?: "Unknown layout error"))
+        }
+    }, null)
+}
+
+
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
@@ -250,12 +405,11 @@ fun MainScreen(
     var selectedChallanForDownload by remember { mutableStateOf<FeeChallan?>(null) }
     var selectedCourse by remember { mutableStateOf<EnrolledCourse?>(null) }
     var selectedCourseFile by remember { mutableStateOf<CourseFile?>(null) }
+    var feePrintChallan by remember { mutableStateOf<FeeChallan?>(null) }
     var pendingDownloadBytes by remember { mutableStateOf<ByteArray?>(null) }
     var pendingDownloadFileName by remember { mutableStateOf<String?>(null) }
     var downloadAllProgress by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var downloadAllCurrentFile by remember { mutableStateOf("") }
-    var pendingZipBytes by remember { mutableStateOf<ByteArray?>(null) }
-    var pendingZipFileName by remember { mutableStateOf<String?>(null) }
     var downloadAllJob by remember { mutableStateOf<Job?>(null) }
     var pendingBatchReport by remember { mutableStateOf<BatchDownloadReport?>(null) }
     var batchReportToShow by remember { mutableStateOf<BatchDownloadReport?>(null) }
@@ -270,6 +424,7 @@ fun MainScreen(
     var showTimetableModal by remember { mutableStateOf(false) }
     var timetableError by remember { mutableStateOf<String?>(null) }
     var attendanceSummaryList by remember { mutableStateOf<List<AttendanceSummary>>(emptyList()) }
+    var attendanceError by remember { mutableStateOf<String?>(null) }
     var cachedAttendanceDetails by remember { mutableStateOf<List<AttendanceDetail>>(emptyList()) }
     var isAttendanceRefreshing by remember { mutableStateOf(false) }
     var gpaSummary by remember { mutableStateOf(GpaSummary(0.0, 0.0, emptyList())) }
@@ -758,10 +913,15 @@ fun MainScreen(
         // Attendance & Marks sync (depend on grades/attendance lists)
         val activeAttendance = try {
             val resolvedCodes = (fetchedGrades ?: GradesCacheStore.loadSnapshot(context)?.summary)?.semesters?.flatMap { it.courses }
-                ?.associate { it.courseName.lowercase().replace("\\s+|-|•|–".toRegex(), "") to it.courseCode }
-            syncAttendanceAndDetails(resolvedCodes)
+                ?.associate { it.courseName.lowercase().replace("\\s+|-| |-".toRegex(), "") to it.courseCode }
+            val fetched = syncAttendanceAndDetails(resolvedCodes)
+            attendanceError = null
+            fetched
         } catch (e: Exception) {
             Log.e("MainActivity", "Attendance summary fetch failed: ${e.message}")
+            if (e is PortalSystemException && e.message?.startsWith("FEEDBACK_REQUIRED:") == true) {
+                attendanceError = e.message
+            }
             emptyList()
         }
 
@@ -871,6 +1031,57 @@ fun MainScreen(
                 }
             }
             AppPage.LOGIN -> Unit
+        }
+    }
+
+    suspend fun refreshAssignmentsOnly() = coroutineScope {
+        val previousSnapshot = AssignmentCacheStore.loadSnapshot(context)
+        val dashboardData = runWithAutoRetry { viewModel.loadDashboardData() }
+
+        if (dashboardData.pendingAssignments.isNotEmpty() || dashboardData.historicalAssignments.isNotEmpty()) {
+            assignments = dashboardData.pendingAssignments
+            historicalAssignments = dashboardData.historicalAssignments
+            loggedInStudentName = viewModel.getCurrentStudentName()
+            loggedInStudentPhoto = dashboardData.profilePhoto
+            welcomeStatusMessage = generateWelcomeStatusMessage(
+                pendingCount = dashboardData.pendingAssignments.size,
+                submittedCount = countSuccessfulSubmissions(dashboardData.historicalAssignments),
+                previousMessage = welcomeStatusMessage
+            )
+            attendanceInsightMessage = generateAttendanceSarcasmMessage(dashboardData.weakestAttendanceInsight)
+            dashboardData.profilePhoto?.let { ProfileCacheStore.savePhoto(context, it) }
+
+            AssignmentCacheStore.saveSnapshot(
+                context = context,
+                pendingAssignments = dashboardData.pendingAssignments,
+                historicalAssignments = dashboardData.historicalAssignments,
+                studentName = viewModel.getCurrentStudentName()
+            )
+            lastSyncedMs = System.currentTimeMillis()
+        }
+
+        if (appSettings.assignmentNotificationsEnabled) {
+            val newAssignments = detectNewAssignments(
+                previous = previousSnapshot,
+                pending = dashboardData.pendingAssignments,
+                historical = dashboardData.historicalAssignments
+            )
+            val notifiedKeys = AssignmentNotificationStore.getNotifiedKeys(context)
+            val unseenAssignments = newAssignments.filter {
+                assignmentNotificationKey(it) !in notifiedKeys
+            }
+            if (unseenAssignments.isNotEmpty()) {
+                AssignmentNotificationManager.notifyNewAssignments(context, unseenAssignments)
+                AssignmentNotificationStore.markNotified(
+                    context,
+                    unseenAssignments.map { assignmentNotificationKey(it) }
+                )
+            }
+            AssignmentNotificationManager.scheduleDeadlineReminders(
+                context = context,
+                pending = dashboardData.pendingAssignments,
+                historical = dashboardData.historicalAssignments
+            )
         }
     }
 
@@ -1007,259 +1218,8 @@ fun MainScreen(
         }
     }
 
-    val instructionDownloadLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("*/*")
-    ) { uri: android.net.Uri? ->
-        val file = selectedInstructionFile
-        if (uri != null && file != null) {
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                )
-            } catch (e: Exception) {
-                Log.w("MainActivity", "Failed to persist URI permission for $uri", e)
-            }
-            loadingTargetScreen = ScreenType.DOWNLOADS
-            isLoading = true
-            scope.launch {
-                var downloadTimeout = false
-                val result = try {
-                    withTimeout(90_000) {
-                        when (val downloadResult = runDownloadWithRetry(file.downloadLink)) {
-                            is DownloadResult.Success -> {
-                                if (writeBytesToUri(context, uri, downloadResult.bytes)) {
-                                    downloadResult
-                                } else {
-                                    DownloadResult.Error("Could not save downloaded file.")
-                                }
-                            }
-                            else -> downloadResult
-                        }
-                    }
-                } catch (e: TimeoutCancellationException) {
-                    downloadTimeout = true
-                    DownloadResult.Error("Download timed out.")
-                } catch (e: IOException) {
-                    DownloadResult.NetworkError
-                }
 
-                withContext(Dispatchers.Main) {
-                    val msg = when {
-                        downloadTimeout -> "Server timeout during download."
-                        result is DownloadResult.Success -> {
-                            val actualName = getFileNameFromUri(context, uri) ?: result.fileName
-                            val dl = QueuedDownload(
-                                id = java.util.UUID.randomUUID().toString(),
-                                fileName = actualName,
-                                downloadLink = file.downloadLink,
-                                status = DownloadQueueStatus.SUCCESS,
-                                lastError = null,
-                                createdAtEpochMs = System.currentTimeMillis(),
-                                fileUri = uri.toString()
-                            )
-                            DownloadQueueStore.upsert(context, dl)
-                            activeDownloads = DownloadQueueStore.getAll(context)
-                            "Instruction file downloaded: $actualName"
-                        }
-                        result is DownloadResult.NetworkError -> "Network unavailable. Download could not start."
-                        result is DownloadResult.Rejected -> result.reason
-                        result is DownloadResult.Error -> result.message
-                        else -> "Download failed."
-                    }
-                    showAppMessage(msg)
-                }
-                isLoading = false
-            }
-        }
-        selectedInstructionFile = null
-    }
 
-    val challanDownloadLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/pdf")
-    ) { uri: android.net.Uri? ->
-        val challan = selectedChallanForDownload
-        if (uri != null && challan != null) {
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                )
-            } catch (e: Exception) {
-                Log.w("MainActivity", "Failed to persist URI permission for $uri", e)
-            }
-            loadingTargetScreen = ScreenType.DOWNLOADS
-            isLoading = true
-            scope.launch {
-                var downloadTimeout = false
-                val result = try {
-                    withTimeout(90_000) {
-                        when (val downloadResult = runDownloadWithRetry(challan.downloadLink)) {
-                            is DownloadResult.Success -> {
-                                if (writeBytesToUri(context, uri, downloadResult.bytes)) {
-                                    downloadResult
-                                } else {
-                                    DownloadResult.Error("Could not save downloaded challan.")
-                                }
-                            }
-                            else -> downloadResult
-                        }
-                    }
-                } catch (e: TimeoutCancellationException) {
-                    downloadTimeout = true
-                    DownloadResult.Error("Download timed out.")
-                } catch (e: IOException) {
-                    DownloadResult.NetworkError
-                }
-
-                withContext(Dispatchers.Main) {
-                    val msg = when {
-                        downloadTimeout -> "Server timeout during download."
-                        result is DownloadResult.Success -> {
-                            val actualName = getFileNameFromUri(context, uri) ?: result.fileName
-                            val dl = QueuedDownload(
-                                id = java.util.UUID.randomUUID().toString(),
-                                fileName = actualName,
-                                downloadLink = challan.downloadLink,
-                                status = DownloadQueueStatus.SUCCESS,
-                                lastError = null,
-                                createdAtEpochMs = System.currentTimeMillis(),
-                                fileUri = uri.toString()
-                            )
-                            DownloadQueueStore.upsert(context, dl)
-                            activeDownloads = DownloadQueueStore.getAll(context)
-                            "Challan downloaded successfully: $actualName"
-                        }
-                        result is DownloadResult.NetworkError -> "Network unavailable. Download could not start."
-                        result is DownloadResult.Rejected -> result.reason
-                        result is DownloadResult.Error -> result.message
-                        else -> "Download failed."
-                    }
-                    showAppMessage(msg)
-                }
-                isLoading = false
-            }
-        }
-        selectedChallanForDownload = null
-    }
-
-    val courseFileDownloadLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("*/*")
-    ) { uri: android.net.Uri? ->
-        val bytes = pendingDownloadBytes
-        val pFileName = pendingDownloadFileName
-        if (uri != null && bytes != null) {
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                )
-            } catch (e: Exception) {
-                Log.w("MainActivity", "Failed to persist URI permission for $uri", e)
-            }
-            loadingTargetScreen = ScreenType.DOWNLOADS
-            isLoading = true
-            scope.launch {
-                val success = withContext(Dispatchers.IO) {
-                    writeBytesToUri(context, uri, bytes)
-                }
-                withContext(Dispatchers.Main) {
-                    val actualName = getFileNameFromUri(context, uri) ?: pFileName ?: "document"
-                    val msg = if (success) {
-                        val dl = QueuedDownload(
-                            id = java.util.UUID.randomUUID().toString(),
-                            fileName = actualName,
-                            downloadLink = selectedCourseFile?.downloadLink ?: "",
-                            status = DownloadQueueStatus.SUCCESS,
-                            lastError = null,
-                            createdAtEpochMs = System.currentTimeMillis(),
-                            fileUri = uri.toString()
-                        )
-                        DownloadQueueStore.upsert(context, dl)
-                        activeDownloads = DownloadQueueStore.getAll(context)
-                        "File downloaded successfully: $actualName"
-                    } else {
-                        "Could not save downloaded file."
-                    }
-                    showAppMessage(msg)
-                }
-                isLoading = false
-            }
-        }
-        pendingDownloadBytes = null
-        pendingDownloadFileName = null
-        selectedCourseFile = null
-    }
-
-    val zipDownloadLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/zip")
-    ) { uri: android.net.Uri? ->
-        val bytes = pendingZipBytes
-        val pFileName = pendingZipFileName
-        if (uri != null && bytes != null) {
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                )
-            } catch (e: Exception) {
-                Log.w("MainActivity", "Failed to persist URI permission for $uri", e)
-            }
-            loadingTargetScreen = ScreenType.DOWNLOADS
-            isLoading = true
-            scope.launch {
-                val success = withContext(Dispatchers.IO) {
-                    writeBytesToUri(context, uri, bytes)
-                }
-                withContext(Dispatchers.Main) {
-                    val actualName = getFileNameFromUri(context, uri) ?: pFileName ?: "archive.zip"
-                    if (success) {
-                        val dl = QueuedDownload(
-                            id = java.util.UUID.randomUUID().toString(),
-                            fileName = actualName,
-                            downloadLink = "",
-                            status = DownloadQueueStatus.SUCCESS,
-                            lastError = null,
-                            createdAtEpochMs = System.currentTimeMillis(),
-                            fileUri = uri.toString()
-                        )
-                        DownloadQueueStore.upsert(context, dl)
-                        activeDownloads = DownloadQueueStore.getAll(context)
-                        
-                        val finalReport = pendingBatchReport?.copy(
-                            zipSavedName = actualName,
-                            isSaved = true
-                        ) ?: BatchDownloadReport(0, 0, emptyList(), actualName, true)
-                        
-                        if (finalReport.failedFiles.isEmpty()) {
-                            showAppMessage("All files saved successfully to $actualName")
-                        } else {
-                            batchReportToShow = finalReport
-                        }
-                    } else {
-                        val finalReport = pendingBatchReport?.copy(
-                            zipSavedName = null,
-                            isSaved = false
-                        )
-                        batchReportToShow = finalReport
-                        showAppMessage("Could not save zip archive.")
-                    }
-                }
-                isLoading = false
-            }
-        } else {
-            val finalReport = pendingBatchReport?.copy(
-                zipSavedName = null,
-                isSaved = false
-            )
-            if (finalReport != null && finalReport.failedFiles.isNotEmpty()) {
-                batchReportToShow = finalReport
-            }
-        }
-        pendingBatchReport = null
-        pendingZipBytes = null
-        pendingZipFileName = null
-    }
 
     // Try auto-login on app startup
     LaunchedEffect(Unit) {
@@ -1294,6 +1254,18 @@ fun MainScreen(
     }
 
     val showUploadQueueDialog = remember { mutableStateOf(false) }
+
+    feePrintChallan?.let { challan ->
+        val url = challan.downloadLink
+        val fileName = "FeeChallan_${challan.semester.replace(" ", "_")}.pdf"
+        FeeChallanPrintDialog(
+            url = url,
+            cookiesList = viewModel.getSessionCookiesList(url),
+            fileName = fileName,
+            onDismiss = { feePrintChallan = null }
+        )
+    }
+
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Box(modifier = Modifier.fillMaxSize()) {
             if (isAppLocked) {
@@ -1410,7 +1382,7 @@ fun MainScreen(
                                 scope.launch {
                                     runCatching {
                                         withTimeout(25_000) {
-                                            refreshAssignmentsState()
+                                            refreshAssignmentsOnly()
                                         }
                                     }.onFailure { e ->
                                         Log.e("MainActivity", "Refresh failed: ${e.message}", e)
@@ -1497,7 +1469,7 @@ fun MainScreen(
                                                 showAppMessage(msg)
                                             }
                                         }
-                                        runCatching { refreshAssignmentsState() }
+                                        runCatching { refreshAssignmentsOnly() }
                                             .onFailure { refreshError ->
                                                 Log.e("MainActivity", "Auto-refresh after upload failed: ${refreshError.message}", refreshError)
                                             }
@@ -1572,7 +1544,7 @@ fun MainScreen(
                             activeDownloads = activeDownloads,
                             onRemoveDownload = { download ->
                                 DownloadQueueStore.remove(context, download.id)
-                                activeDownloads = activeDownloads.filter { it.id != download.id }
+                                activeDownloads = DownloadQueueStore.getAll(context)
                             },
                             onClearFinished = {
                                 DownloadQueueStore.clearFinished(context)
@@ -1587,6 +1559,9 @@ fun MainScreen(
                                 if (!download.fileUri.isNullOrEmpty()) {
                                     openDownloadedFile(download.fileUri)
                                 }
+                            },
+                            onOpenPhysicalFile = { file ->
+                                openDownloadedFile(file.uri)
                             },
                             onBack = {
                                 currentScreen = ScreenType.PENDING
@@ -1725,7 +1700,7 @@ fun MainScreen(
                                                 showAppMessage(msg)
                                             }
                                         }
-                                        runCatching { refreshAssignmentsState() }
+                                        runCatching { refreshAssignmentsOnly() }
                                             .onFailure { refreshError ->
                                                 Log.e("MainActivity", "Auto-refresh after re-upload failed: ${refreshError.message}", refreshError)
                                             }
@@ -1750,6 +1725,7 @@ fun MainScreen(
                         AttendanceScreen(
                             attendanceSummaryList = attendanceSummaryList,
                             cachedAttendanceDetails = cachedAttendanceDetails,
+                            errorMessage = attendanceError,
                             isRefreshing = isAttendanceRefreshing,
                             onRefresh = {
                                 if (isAttendanceRefreshing) return@AttendanceScreen
@@ -1758,10 +1734,14 @@ fun MainScreen(
                                     runCatching {
                                         val gradesSnapshot = GradesCacheStore.loadSnapshot(context)
                                         val resolvedCodes = gradesSnapshot?.summary?.semesters?.flatMap { it.courses }
-                                            ?.associate { it.courseName.lowercase().replace("\\s+|-|•|–".toRegex(), "") to it.courseCode }
+                                            ?.associate { it.courseName.lowercase().replace("\\s+|-| |-".toRegex(), "") to it.courseCode }
                                         syncAttendanceAndDetails(resolvedCodes)
+                                        attendanceError = null
                                     }.onFailure { e ->
                                         Log.e("MainActivity", "Attendance refresh failed: ${e.message}", e)
+                                        if (e is PortalSystemException && e.message?.startsWith("FEEDBACK_REQUIRED:") == true) {
+                                            attendanceError = e.message
+                                        }
                                         if (!isNetworkError(e)) {
                                             val msg = if (e is PortalSystemException) (e.message ?: "Refresh failed. Please try again.") else "Refresh failed. Please try again."
                                             showAppMessage(msg)
@@ -1832,8 +1812,8 @@ fun MainScreen(
                         )
                     }
                     AppPage.MARKS -> {
-                        val courses = attendanceSummaryList.map { it.courseCode }
-                        val courseNamesMap = attendanceSummaryList.associate { it.courseCode to it.courseName }
+                        val courses = enrolledCourses.map { it.courseCode }.ifEmpty { attendanceSummaryList.map { it.courseCode } }
+                        val courseNamesMap = enrolledCourses.associate { it.courseCode to it.courseTitle } + attendanceSummaryList.associate { it.courseCode to it.courseName }
                         MarksScreen(
                             courseList = courses,
                             courseNames = courseNamesMap,
@@ -1933,9 +1913,13 @@ fun MainScreen(
                                 result
                             },
                             onDownloadChallan = { challan ->
-                                selectedChallanForDownload = challan
-                                val defaultName = "FeeChallan_${challan.semester.replace(" ", "_")}.pdf"
-                                challanDownloadLauncher.launch(defaultName)
+                                if (challan.downloadLink.contains(".aspx", ignoreCase = true)) {
+                                    feePrintChallan = challan
+                                } else {
+                                    val defaultName = "FeeChallan_${challan.semester.replace(" ", "_")}.pdf"
+                                    DownloadWorkScheduler.enqueue(context, defaultName, challan.downloadLink)
+                                    showAppMessage("Download started in background")
+                                }
                             },
                             onBack = {
                                 currentScreen = ScreenType.PENDING
@@ -1950,43 +1934,10 @@ fun MainScreen(
                                 allAssignments = assignments + historicalAssignments,
                                 viewModel = viewModel,
                                 onDownloadFile = { file ->
-                                    selectedCourseFile = file
-                                    loadingTargetScreen = ScreenType.DOWNLOADS
-                                    isLoading = true
-                                    scope.launch {
-                                        var downloadTimeout = false
-                                        val result = try {
-                                            withTimeout(90_000) {
-                                                runDownloadWithRetry(file.downloadLink)
-                                            }
-                                        } catch (e: TimeoutCancellationException) {
-                                            downloadTimeout = true
-                                            DownloadResult.Error("Download timed out.")
-                                        } catch (e: IOException) {
-                                            DownloadResult.NetworkError
-                                        }
-
-                                        withContext(Dispatchers.Main) {
-                                            isLoading = false
-                                            when (result) {
-                                                is DownloadResult.Success -> {
-                                                    pendingDownloadBytes = result.bytes
-                                                    pendingDownloadFileName = result.fileName
-                                                    val sanitizedName = result.fileName.replace("[\\\\/:*?\"<>|]".toRegex(), "_")
-                                                    courseFileDownloadLauncher.launch(sanitizedName)
-                                                }
-                                                is DownloadResult.NetworkError -> {
-                                                    showAppMessage("Network unavailable. Download could not start.")
-                                                }
-                                                is DownloadResult.Rejected -> {
-                                                    showAppMessage(result.reason)
-                                                }
-                                                is DownloadResult.Error -> {
-                                                    showAppMessage(result.message)
-                                                }
-                                            }
-                                        }
-                                    }
+                                    val sanitizedName = file.title.replace("[\\\\/:*?\"<>|]".toRegex(), "_")
+                                    val finalName = if (sanitizedName.contains(".")) sanitizedName else "$sanitizedName.pdf"
+                                    DownloadWorkScheduler.enqueue(context, finalName, file.downloadLink)
+                                    showAppMessage("Download started in background")
                                 },
                                 onDownloadAllFiles = { files ->
                                     val job = scope.launch {
@@ -2055,11 +2006,14 @@ fun MainScreen(
                                         )
                                         
                                         if (zipBytesResult != null && successCount > 0) {
-                                            pendingBatchReport = report
-                                            pendingZipBytes = zipBytesResult
                                             val defaultName = "${course.courseCode.replace(" ", "_")}_Course_Files.zip"
-                                            pendingZipFileName = defaultName
-                                            zipDownloadLauncher.launch(defaultName)
+                                            val savedUri = withContext(Dispatchers.IO) {
+                                                writeBytesToDownloads(context, defaultName, zipBytesResult!!)
+                                            }
+                                            batchReportToShow = report.copy(
+                                                isSaved = savedUri != null,
+                                                zipSavedName = defaultName
+                                            )
                                         } else {
                                             batchReportToShow = report
                                         }
@@ -2277,7 +2231,15 @@ fun MainScreen(
                     )
                     Spacer(modifier = Modifier.height(14.dp))
                     Button(
-                        onClick = { uriHandler.openUri(updateInfo.releaseUrl) },
+                        onClick = {
+                            scope.launch {
+                                UpdateNavigationManager.launchUpdateDownload(
+                                    context = context,
+                                    githubReleaseUrl = updateInfo.releaseUrl,
+                                    onShowMessage = { showAppMessage(it) }
+                                )
+                            }
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                     ) {
@@ -2335,13 +2297,8 @@ fun MainScreen(
                                 Spacer(modifier = Modifier.width(8.dp))
                                 OutlinedButton(
                                     onClick = {
-                                        if (appSettings.downloadBehavior == DownloadBehavior.AUTO_DOWNLOADS) {
-                                            DownloadWorkScheduler.enqueue(context, file.fileName, file.downloadLink)
-                                             showAppMessage("Download started in background")
-                                        } else {
-                                            selectedInstructionFile = file
-                                            instructionDownloadLauncher.launch(file.fileName)
-                                        }
+                                        DownloadWorkScheduler.enqueue(context, file.fileName, file.downloadLink)
+                                        showAppMessage("Download started in background")
                                     },
                                     shape = RoundedCornerShape(8.dp),
                                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary)

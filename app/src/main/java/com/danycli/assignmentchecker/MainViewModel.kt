@@ -97,6 +97,10 @@ open class MainViewModel : ViewModel() {
         return portalSessionUseCase.injectCookiesFromWebView(cookieHeader, url)
     }
 
+    open fun getSessionCookiesList(url: String): List<String> {
+        return portalSessionUseCase.getSessionCookiesList(url)
+    }
+
     open suspend fun isSecurityVerificationStillRequired(): Boolean {
         return portalSessionUseCase.isSecurityVerificationStillRequired()
     }

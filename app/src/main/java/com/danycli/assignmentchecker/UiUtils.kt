@@ -224,7 +224,7 @@ fun writeBytesToDownloads(context: Context, fileName: String, bytes: ByteArray):
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
                 put(MediaStore.MediaColumns.MIME_TYPE, guessMimeType(safeName))
-                put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/Assignly")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/Assignly Downloads")
             }
             val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 ?: return null
@@ -240,7 +240,9 @@ fun writeBytesToDownloads(context: Context, fileName: String, bytes: ByteArray):
                 null
             }
         } else {
-            val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
+            val baseDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
+            val dir = File(baseDir, "Assignly Downloads")
+            if (!dir.exists()) dir.mkdirs()
             val file = File(dir, safeName)
             file.outputStream().use { stream ->
                 stream.write(bytes)
@@ -251,6 +253,79 @@ fun writeBytesToDownloads(context: Context, fileName: String, bytes: ByteArray):
     } catch (e: Exception) {
         Log.e("UiUtils", "writeBytesToDownloads failed: ${e.javaClass.simpleName}")
         null
+    }
+}
+
+data class PhysicalDownloadedFile(
+    val uri: String,
+    val fileName: String,
+    val sizeBytes: Long,
+    val lastModifiedMs: Long
+)
+
+fun getLocalDownloadedFiles(context: Context): List<PhysicalDownloadedFile> {
+    val files = mutableListOf<PhysicalDownloadedFile>()
+    try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val uri = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            val projection = arrayOf(
+                MediaStore.MediaColumns._ID,
+                MediaStore.MediaColumns.DISPLAY_NAME,
+                MediaStore.MediaColumns.SIZE,
+                MediaStore.MediaColumns.DATE_MODIFIED
+            )
+            val selection = "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
+            val selectionArgs = arrayOf("%Assignly Downloads%")
+            context.contentResolver.query(uri, projection, selection, selectionArgs, "${MediaStore.MediaColumns.DATE_MODIFIED} DESC")?.use { cursor ->
+                val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+                val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
+                val dateCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
+                while (cursor.moveToNext()) {
+                    val id = cursor.getLong(idCol)
+                    val name = cursor.getString(nameCol) ?: "Unknown"
+                    val size = cursor.getLong(sizeCol)
+                    val date = cursor.getLong(dateCol) * 1000L
+                    val contentUri = android.content.ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id)
+                    files.add(PhysicalDownloadedFile(contentUri.toString(), name, size, date))
+                }
+            }
+        } else {
+            val baseDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
+            val dir = File(baseDir, "Assignly Downloads")
+            if (dir.exists() && dir.isDirectory) {
+                dir.listFiles()?.forEach { file ->
+                    if (file.isFile) {
+                        files.add(
+                            PhysicalDownloadedFile(
+                                uri = Uri.fromFile(file).toString(),
+                                fileName = file.name,
+                                sizeBytes = file.length(),
+                                lastModifiedMs = file.lastModified()
+                            )
+                        )
+                    }
+                }
+                files.sortByDescending { it.lastModifiedMs }
+            }
+        }
+    } catch (e: Exception) {
+        Log.e("UiUtils", "Failed to fetch local files", e)
+    }
+    return files
+}
+
+fun deleteLocalFile(context: Context, uriString: String): Boolean {
+    return try {
+        val uri = Uri.parse(uriString)
+        if (uri.scheme == "file") {
+            File(uri.path ?: return false).delete()
+        } else {
+            context.contentResolver.delete(uri, null, null) > 0
+        }
+    } catch (e: Exception) {
+        Log.e("UiUtils", "Failed to delete file", e)
+        false
     }
 }
 

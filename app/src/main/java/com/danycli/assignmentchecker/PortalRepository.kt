@@ -855,6 +855,12 @@ class PortalRepository {
         return parsedCookies.size
     }
 
+    fun getSessionCookiesList(url: String = baseUrl): List<String> {
+        val host = runCatching { url.toHttpUrl().host }.getOrNull() ?: return emptyList()
+        val cookies = cookieStore[host]?.values ?: return emptyList()
+        return cookies.map { "${it.name}=${it.value}" }
+    }
+
     private val cookieStore = HashMap<String, MutableMap<String, Cookie>>()
     private val client = OkHttpClient.Builder()
         .cookieJar(object : CookieJar {
@@ -2445,6 +2451,16 @@ class PortalRepository {
             }
         }
 
+        val scriptRedirect = doc.select("script").asSequence()
+            .mapNotNull { extractUrlFromJavascript(it.html()) }
+            .firstOrNull()
+        if (scriptRedirect != null) {
+            val normalizedScriptUrl = normalizeUrl(scriptRedirect, pageUrl)
+            if (normalizedScriptUrl.isNotBlank()) {
+                return HtmlDownloadCandidate(url = normalizedScriptUrl)
+            }
+        }
+
         val embeddedFileUrl = doc.select("iframe[src], frame[src], embed[src], object[data]")
             .firstNotNullOfOrNull { element ->
                 val raw = when {
@@ -3258,6 +3274,10 @@ class PortalRepository {
                 throw PortalSystemException("Session expired")
             }
             
+            if (finalUrl.lowercase().contains("studentfeedbacksummary") || html.lowercase().contains("feedbacks completed")) {
+                throw PortalSystemException("FEEDBACK_REQUIRED: Please complete your course feedback on the main portal to view your attendance summary.")
+            }
+            
             val doc = Jsoup.parse(html)
             val list = mutableListOf<AttendanceSummary>()
             
@@ -3369,13 +3389,8 @@ class PortalRepository {
                     if (aTag == null && codeIdx >= 0 && codeIdx < cells.size) aTag = cells[codeIdx].select("a").firstOrNull()
                     if (aTag != null) {
                         val href = aTag.attr("href")
-                        if (href.contains("__doPostBack")) {
-                            val start = href.indexOf("'") + 1
-                            val end = href.indexOf("'", start)
-                            if (start > 0 && end > start) {
-                                postbackTarget = href.substring(start, end)
-                            }
-                        }
+                        val onClick = aTag.attr("onclick")
+                        postbackTarget = extractPostBackInfo(href)?.target ?: extractPostBackInfo(onClick)?.target ?: ""
                     }
 
                     val cleanCode = code.trim().uppercase()
@@ -3387,9 +3402,9 @@ class PortalRepository {
                         coursePostbackTargets[cleanTitle] = postbackTarget
                     }
 
-                    val totalLectures = totalClassesStr.toIntOrNull() ?: 0
-                    val presents = presentsStr.toIntOrNull() ?: 0
-                    val absents = absentsStr.toIntOrNull() ?: 0
+                    val totalLectures = totalClassesStr.replace(Regex("[^0-9]"), "").toIntOrNull() ?: 0
+                    val presents = presentsStr.replace(Regex("[^0-9]"), "").toIntOrNull() ?: 0
+                    val absents = absentsStr.replace(Regex("[^0-9]"), "").toIntOrNull() ?: 0
 
                     list.add(
                         AttendanceSummary(
@@ -4315,15 +4330,27 @@ class PortalRepository {
                 var challanLink = ""
                 val hasChallanLink = row.select("a").any { anchor ->
                     val href = anchor.attr("href")
+                    val onClick = anchor.attr("onclick")
                     val hrefLower = href.lowercase()
+                    val onClickLower = onClick.lowercase()
                     val text = anchor.text().lowercase()
-                    val matches = hrefLower.contains("dopostback") && (text.contains("print") || text.contains("download") || text.contains("view"))
+                    
+                    val isActionLink = text.contains("print") || text.contains("download") || text.contains("view") || text.contains("challan")
+                    val hasPostBack = hrefLower.contains("dopostback") || onClickLower.contains("dopostback")
+                    
+                    val matches = isActionLink && (hasPostBack || href.isNotBlank())
+                    
                     if (matches) {
-                        val postBackInfo = extractPostBackInfo(href)
+                        val postBackInfo = extractPostBackInfo(href) ?: extractPostBackInfo(onClick)
                         challanLink = if (postBackInfo != null) {
                             toPostBackDownloadLink(postBackInfo, sourcePageUrl = "$baseUrl/FeeChallans.aspx")
                         } else {
-                            href
+                            val rawUrl = when {
+                                href.isBlank() || href == "#" -> extractUrlFromJavascript(onClick)
+                                href.startsWith("javascript", true) -> extractUrlFromJavascript(href) ?: extractUrlFromJavascript(onClick)
+                                else -> href
+                            }
+                            normalizeUrl(rawUrl, "$baseUrl/FeeChallans.aspx")
                         }
                     }
                     matches
@@ -4337,7 +4364,7 @@ class PortalRepository {
                     for (cell in cells) {
                         val cellText = cell.text().trim()
                         val lowerText = cellText.lowercase()
-                        if (lowerText.contains("spring") || lowerText.contains("fall")) {
+                        if (lowerText.contains("spring") || lowerText.contains("fall") || lowerText.matches(Regex("(?i)(sp|fa|su)\\d{2,4}"))) {
                             semester = cellText
                         } else if (cellText.matches(Regex("""\d{2}[-/.\s]([a-zA-Z]{3}|\d{2})[-/.\s]\d{2,4}""")) || lowerText.contains("due") || cellText.contains("-") && cellText.length in 9..11) {
                             dueDate = cellText.replace("due", "", ignoreCase = true).replace(":", "").trim()
@@ -4350,7 +4377,7 @@ class PortalRepository {
                             val clean = cellText.replace(",", "").replace("PKR", "", ignoreCase = true).replace("Rs", "", ignoreCase = true).trim()
                             val match = Regex("""\d+(\.\d+)?""").find(clean)
                             val amt = match?.value?.toDoubleOrNull()
-                            if (amt != null && amt > 0.0) {
+                            if (amt != null && amt > amount) {
                                 amount = amt
                             }
                         }
@@ -4558,6 +4585,21 @@ class PortalRepository {
 
         val finalChallans = if (challansHtml != null) challansList else null
         val finalLedger = if (historyHtml != null) sortedLedger else null
+
+        // Post-process challans to fix fake amounts (e.g. Serial numbers parsed as amounts)
+        if (challansList.isNotEmpty()) {
+            if (challansList.size == 1 && totalOutstanding > 0.0) {
+                if (challansList[0].amount < 1000.0) {
+                    challansList[0] = challansList[0].copy(amount = totalOutstanding)
+                }
+            } else {
+                for (i in challansList.indices) {
+                    if (challansList[i].amount < 1000.0) {
+                        challansList[i] = challansList[i].copy(amount = 0.0)
+                    }
+                }
+            }
+        }
 
         return FeeSnapshot(
             outstandingBalance = outstandingBalance,

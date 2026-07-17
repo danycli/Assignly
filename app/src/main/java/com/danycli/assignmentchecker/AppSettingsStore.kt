@@ -11,7 +11,8 @@ data class AppSettings(
     val assignmentNotificationsEnabled: Boolean,
     val marksNotificationsEnabled: Boolean,
     val classNotificationsEnabled: Boolean = true,
-    val downloadBehavior: DownloadBehavior,
+    val autoLogin: Boolean,
+    val checkUpdates: Boolean,
     val themeMode: ThemeMode,
     val rememberRegistrationNumber: Boolean = true,
     val biometricLockEnabled: Boolean = false
@@ -27,7 +28,8 @@ object AppSettingsStore {
     private const val KEY_ASSIGNMENT_NOTIFICATIONS_ENABLED = "assignment_notifications_enabled"
     private const val KEY_MARKS_NOTIFICATIONS_ENABLED = "marks_notifications_enabled"
     private const val KEY_CLASS_NOTIFICATIONS_ENABLED = "class_notifications_enabled"
-    private const val KEY_DOWNLOAD_BEHAVIOR = "download_behavior"
+    private const val KEY_AUTO_LOGIN = "auto_login"
+    private const val KEY_CHECK_UPDATES = "check_updates"
     private const val KEY_THEME_MODE = "theme_mode"
     private const val KEY_REMEMBER_REGISTRATION_NUMBER = "remember_registration_number"
     private const val KEY_BIOMETRIC_LOCK_ENABLED = "biometric_lock_enabled"
@@ -40,7 +42,8 @@ object AppSettingsStore {
     private const val DEFAULT_ASSIGNMENT_NOTIFICATIONS_ENABLED = true
     private const val DEFAULT_MARKS_NOTIFICATIONS_ENABLED = true
     private const val DEFAULT_CLASS_NOTIFICATIONS_ENABLED = true
-    private val DEFAULT_DOWNLOAD_BEHAVIOR = DownloadBehavior.ASK_EVERY_TIME
+    private const val DEFAULT_AUTO_LOGIN = false
+    private const val DEFAULT_CHECK_UPDATES = true
     private val DEFAULT_THEME_MODE = ThemeMode.SYSTEM
     private const val DEFAULT_REMEMBER_REGISTRATION_NUMBER = true
     private const val DEFAULT_BIOMETRIC_LOCK_ENABLED = false
@@ -71,9 +74,8 @@ object AppSettingsStore {
                 KEY_CLASS_NOTIFICATIONS_ENABLED,
                 DEFAULT_CLASS_NOTIFICATIONS_ENABLED
             ),
-            downloadBehavior = prefs.getString(KEY_DOWNLOAD_BEHAVIOR, DEFAULT_DOWNLOAD_BEHAVIOR.name)
-                ?.let { runCatching { DownloadBehavior.valueOf(it) }.getOrNull() }
-                ?: DEFAULT_DOWNLOAD_BEHAVIOR,
+            autoLogin = prefs.getBoolean(KEY_AUTO_LOGIN, DEFAULT_AUTO_LOGIN),
+            checkUpdates = prefs.getBoolean(KEY_CHECK_UPDATES, DEFAULT_CHECK_UPDATES),
             themeMode = prefs.getString(KEY_THEME_MODE, DEFAULT_THEME_MODE.name)
                 ?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() }
                 ?: DEFAULT_THEME_MODE,
@@ -99,7 +101,8 @@ object AppSettingsStore {
             .putBoolean(KEY_ASSIGNMENT_NOTIFICATIONS_ENABLED, settings.assignmentNotificationsEnabled)
             .putBoolean(KEY_MARKS_NOTIFICATIONS_ENABLED, settings.marksNotificationsEnabled)
             .putBoolean(KEY_CLASS_NOTIFICATIONS_ENABLED, settings.classNotificationsEnabled)
-            .putString(KEY_DOWNLOAD_BEHAVIOR, settings.downloadBehavior.name)
+            .putBoolean(KEY_AUTO_LOGIN, settings.autoLogin)
+            .putBoolean(KEY_CHECK_UPDATES, settings.checkUpdates)
             .putString(KEY_THEME_MODE, settings.themeMode.name)
             .putBoolean(KEY_REMEMBER_REGISTRATION_NUMBER, settings.rememberRegistrationNumber)
             .putBoolean(KEY_BIOMETRIC_LOCK_ENABLED, settings.biometricLockEnabled)

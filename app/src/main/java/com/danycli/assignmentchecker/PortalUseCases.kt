@@ -84,6 +84,10 @@ class PortalSessionUseCase(private val repository: PortalRepository) {
         return repository.injectCookiesFromWebView(cookieHeader, url)
     }
 
+    fun getSessionCookiesList(url: String): List<String> {
+        return repository.getSessionCookiesList(url)
+    }
+
     suspend fun isSecurityVerificationStillRequired(): Boolean {
         return withContext(Dispatchers.IO) {
             repository.isSecurityVerificationStillRequired()

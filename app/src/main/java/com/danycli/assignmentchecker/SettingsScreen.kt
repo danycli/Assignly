@@ -61,10 +61,11 @@ fun SettingsScreen(
     var assignmentNotificationsEnabled by remember { mutableStateOf(initialSettings.assignmentNotificationsEnabled) }
     var marksNotificationsEnabled by remember { mutableStateOf(initialSettings.marksNotificationsEnabled) }
     var classNotificationsEnabled by remember { mutableStateOf(initialSettings.classNotificationsEnabled) }
-    var downloadBehavior by remember { mutableStateOf(initialSettings.downloadBehavior) }
+    var autoLogin by remember { mutableStateOf(initialSettings.autoLogin) }
     var themeMode by remember { mutableStateOf(initialSettings.themeMode) }
     var rememberRegistrationNumber by remember { mutableStateOf(initialSettings.rememberRegistrationNumber) }
     var biometricLockEnabled by remember { mutableStateOf(initialSettings.biometricLockEnabled) }
+    var checkUpdates by remember { mutableStateOf(initialSettings.checkUpdates) }
 
     val context = LocalContext.current
     val intervalOptions = listOf(1L, 3L, 6L, 12L, 24L)
@@ -77,7 +78,8 @@ fun SettingsScreen(
         assignmentNotificationsEnabled = assignmentNotificationsEnabled,
         marksNotificationsEnabled = marksNotificationsEnabled,
         classNotificationsEnabled = classNotificationsEnabled,
-        downloadBehavior = downloadBehavior,
+        autoLogin = autoLogin,
+        checkUpdates = checkUpdates,
         themeMode = themeMode,
         rememberRegistrationNumber = rememberRegistrationNumber,
         biometricLockEnabled = biometricLockEnabled
@@ -256,40 +258,7 @@ fun SettingsScreen(
                 }
             }
 
-            item {
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("Downloads", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            DownloadBehavior.values().forEach { option ->
-                                val label = when (option) {
-                                    DownloadBehavior.ASK_EVERY_TIME -> "Ask every time"
-                                    DownloadBehavior.AUTO_DOWNLOADS -> "Auto-save"
-                                }
-                                AssistChip(
-                                    onClick = {
-                                        downloadBehavior = option
-                                        onSaveSettings(buildSettings())
-                                    },
-                                    label = { Text(label) },
-                                    colors = AssistChipDefaults.assistChipColors(
-                                        containerColor = if (downloadBehavior == option) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant,
-                                        labelColor = if (downloadBehavior == option) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                )
-                            }
-                        }
-                        Text(
-                            "Auto-save stores files in your Downloads folder.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
-                            fontSize = 12.sp
-                        )
-                    }
-                }
-            }
+
 
             item {
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
@@ -332,7 +301,8 @@ fun SettingsScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("Assignly", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
-                                Text("Version ${com.danycli.assignmentchecker.BuildConfig.VERSION_NAME} (${com.danycli.assignmentchecker.BuildConfig.VERSION_CODE})", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f), fontSize = 12.sp)
+                                val dynamicVersion = getDynamicVersionName(LocalContext.current)
+                                Text("Version $dynamicVersion (${com.danycli.assignmentchecker.BuildConfig.VERSION_CODE})", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f), fontSize = 12.sp)
                             }
                             var isCheckingUpdates by remember { mutableStateOf(false) }
                             Button(
