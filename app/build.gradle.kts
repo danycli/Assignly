@@ -16,6 +16,7 @@ android {
         versionName = "1.7"
         buildConfigField("String", "PORTAL_BASE_URL", "\"https://sis.cuiatd.edu.pk\"")
         buildConfigField("String", "PORTAL_USER_AGENT", "\"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36\"")
+        buildConfigField("String", "ANALYTICS_BASE_URL", "\"https://assignly.site/\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -70,6 +71,10 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.metrics.performance)
+    
+    implementation(libs.retrofit)
+    implementation(libs.converter.gson)
+    implementation(libs.logging.interceptor)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
