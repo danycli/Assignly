@@ -301,8 +301,7 @@ fun SettingsScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("Assignly", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
-                                val dynamicVersion = getDynamicVersionName(LocalContext.current)
-                                Text("Version $dynamicVersion (${com.danycli.assignmentchecker.BuildConfig.VERSION_CODE})", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f), fontSize = 12.sp)
+                                Text("Version ${com.danycli.assignmentchecker.BuildConfig.VERSION_NAME} (${com.danycli.assignmentchecker.BuildConfig.VERSION_CODE})", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f), fontSize = 12.sp)
                             }
                             var isCheckingUpdates by remember { mutableStateOf(false) }
                             Button(
