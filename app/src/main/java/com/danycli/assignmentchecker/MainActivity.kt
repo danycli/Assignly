@@ -76,7 +76,7 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        AnalyticsManager.initialize(this)
+        com.danycli.assignmentchecker.analytics.AnalyticsManager.initialize(this)
         enableEdgeToEdge()
         if (BuildConfig.DEBUG || BuildConfig.BUILD_TYPE == "benchmark") {
             jankStats = JankStats.createAndTrack(window) { frameData ->
