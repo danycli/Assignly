@@ -71,7 +71,7 @@ import com.danycli.assignmentchecker.*
 import com.danycli.assignmentchecker.ui.theme.*
 
 @Composable
-fun ActiveUploadStatusCard(upload: QueuedUpload, onDismiss: () -> Unit = {}) {
+fun ActiveUploadStatusCard(upload: QueuedUpload, onDismiss: () -> Unit = {}, onSolveCaptcha: () -> Unit = {}) {
     val isDark = isSystemInDarkTheme()
     val isFinished = upload.status == UploadQueueStatus.SUCCESS || upload.status == UploadQueueStatus.FAILED
     
@@ -147,19 +147,35 @@ fun ActiveUploadStatusCard(upload: QueuedUpload, onDismiss: () -> Unit = {}) {
             }
 
             if (!upload.lastError.isNullOrBlank()) {
-                Text(
-                    text = upload.lastError,
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.error,
-                    lineHeight = 14.sp
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = upload.lastError,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.error,
+                        lineHeight = 14.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (upload.lastError.contains("captcha", ignoreCase = true) || upload.lastError.contains("security", ignoreCase = true)) {
+                        TextButton(
+                            onClick = onSolveCaptcha,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            modifier = Modifier.height(24.dp)
+                        ) {
+                            Text("SOLVE", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-fun ActiveDownloadStatusCard(download: QueuedDownload, onDismiss: () -> Unit = {}) {
+fun ActiveDownloadStatusCard(download: QueuedDownload, onDismiss: () -> Unit = {}, onSolveCaptcha: () -> Unit = {}) {
     val isDark = isSystemInDarkTheme()
     val isFinished = download.status == DownloadQueueStatus.SUCCESS || download.status == DownloadQueueStatus.FAILED
     
@@ -234,12 +250,28 @@ fun ActiveDownloadStatusCard(download: QueuedDownload, onDismiss: () -> Unit = {
             }
 
             if (!download.lastError.isNullOrBlank()) {
-                Text(
-                    text = download.lastError,
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.error,
-                    lineHeight = 14.sp
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = download.lastError,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.error,
+                        lineHeight = 14.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (download.lastError.contains("captcha", ignoreCase = true) || download.lastError.contains("security", ignoreCase = true)) {
+                        TextButton(
+                            onClick = onSolveCaptcha,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            modifier = Modifier.height(24.dp)
+                        ) {
+                            Text("SOLVE", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
             }
         }
     }

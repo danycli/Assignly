@@ -76,6 +76,12 @@ class PortalSessionUseCase(private val repository: PortalRepository) {
 
     fun getPortalLoginUrl(): String = repository.getPortalLoginUrl()
 
+    suspend fun ensureSessionValid() {
+        return withContext(Dispatchers.IO) {
+            repository.ensureSessionValid()
+        }
+    }
+
     fun setUserAgentForSession(userAgent: String) {
         repository.setUserAgentForSession(userAgent)
     }

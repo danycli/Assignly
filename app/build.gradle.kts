@@ -12,17 +12,20 @@ android {
         applicationId = "com.danycli.assignmentchecker"
         minSdk = 26
         targetSdk = 35
-        versionCode = 12
-        versionName = "1.7"
+        versionCode = 13
+        versionName = "2.4"
         buildConfigField("String", "PORTAL_BASE_URL", "\"https://sis.cuiatd.edu.pk\"")
         buildConfigField("String", "PORTAL_USER_AGENT", "\"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36\"")
-        buildConfigField("String", "ANALYTICS_BASE_URL", "\"https://assignly.site/\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
+        debug {
+            buildConfigField("String", "ANALYTICS_BASE_URL", "\"http://127.0.0.1:3000/\"")
+        }
         release {
+            buildConfigField("String", "ANALYTICS_BASE_URL", "\"https://assignly.site/\"")
             isMinifyEnabled = true
             isShrinkResources = true
             signingConfig = signingConfigs.getByName("debug")

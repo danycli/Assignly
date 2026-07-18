@@ -318,6 +318,7 @@ fun AssignmentsScreen(
     onDismissUpload: (QueuedUpload) -> Unit = {},
     activeDownloads: List<QueuedDownload> = emptyList(),
     onDismissDownload: (QueuedDownload) -> Unit = {},
+    onSolveCaptcha: () -> Unit = {},
     lastSyncedMs: Long = 0L
 ) {
     var selectedAssignment by remember { mutableStateOf<Assignment?>(null) }
@@ -468,7 +469,8 @@ fun AssignmentsScreen(
                     ) { upload ->
                         ActiveUploadStatusCard(
                             upload = upload,
-                            onDismiss = { onDismissUpload(upload) }
+                            onDismiss = { onDismissUpload(upload) },
+                            onSolveCaptcha = onSolveCaptcha
                         )
                     }
                 }
@@ -480,7 +482,8 @@ fun AssignmentsScreen(
                     ) { download ->
                         ActiveDownloadStatusCard(
                             download = download,
-                            onDismiss = { onDismissDownload(download) }
+                            onDismiss = { onDismissDownload(download) },
+                            onSolveCaptcha = onSolveCaptcha
                         )
                     }
                 }

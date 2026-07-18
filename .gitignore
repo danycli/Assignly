@@ -10,3 +10,15 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Sensitive files
+*.jks
+*.keystore
+google-services.json
+GoogleService-Info.plist
+.env
+.env.*
+signing.properties
+keystore.properties
+credentials.json
+.agents/

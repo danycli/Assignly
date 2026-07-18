@@ -885,6 +885,20 @@ class PortalRepository {
     fun getPortalBaseUrl(): String = baseUrl
     fun getPortalLoginUrl(): String = "$baseUrl/Login.aspx"
 
+    fun ensureSessionValid() {
+        val request = Request.Builder()
+            .url("$baseUrl/StudentProfile.aspx")
+            .get()
+            .build()
+        client.newCall(request).execute().use { response ->
+            val finalUrl = response.request.url.toString()
+            val html = response.body?.string().orEmpty()
+            if (isLoginPage(finalUrl, html) || !hasSessionCookiesForHost(baseHost)) {
+                throw PortalSystemException("Session expired")
+            }
+        }
+    }
+
     fun setUserAgentForSession(candidate: String?) {
         val normalized = candidate?.trim().orEmpty()
         if (normalized.isNotEmpty()) {

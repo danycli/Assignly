@@ -69,6 +69,7 @@ fun HistoricalAssignmentsScreen(
     onDismissUpload: (QueuedUpload) -> Unit = {},
     activeDownloads: List<QueuedDownload> = emptyList(),
     onDismissDownload: (QueuedDownload) -> Unit = {},
+    onSolveCaptcha: () -> Unit = {},
     lastSyncedMs: Long = 0L
 ) {
     var historySearchQuery by remember { mutableStateOf("") }
@@ -152,7 +153,8 @@ fun HistoricalAssignmentsScreen(
                 ) { upload ->
                     ActiveUploadStatusCard(
                         upload = upload,
-                        onDismiss = { onDismissUpload(upload) }
+                        onDismiss = { onDismissUpload(upload) },
+                        onSolveCaptcha = onSolveCaptcha
                     )
                 }
             }
@@ -164,7 +166,8 @@ fun HistoricalAssignmentsScreen(
                 ) { download ->
                     ActiveDownloadStatusCard(
                         download = download,
-                        onDismiss = { onDismissDownload(download) }
+                        onDismiss = { onDismissDownload(download) },
+                        onSolveCaptcha = onSolveCaptcha
                     )
                 }
             }

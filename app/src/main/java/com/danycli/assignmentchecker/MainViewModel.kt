@@ -89,6 +89,10 @@ open class MainViewModel : ViewModel() {
 
     open fun getPortalLoginUrl(): String = portalSessionUseCase.getPortalLoginUrl()
 
+    open suspend fun ensureSessionValid() {
+        portalSessionUseCase.ensureSessionValid()
+    }
+
     open fun setUserAgentForSession(userAgent: String) {
         portalSessionUseCase.setUserAgentForSession(userAgent)
     }

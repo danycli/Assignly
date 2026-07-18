@@ -1536,6 +1536,7 @@ fun MainScreen(
                                 DownloadQueueStore.remove(context, download.id)
                                 activeDownloads = activeDownloads.filter { it.id != download.id }
                             },
+                            onSolveCaptcha = { showCaptchaDialog = true },
                             lastSyncedMs = lastSyncedMs
                         )
                     }
@@ -1555,6 +1556,7 @@ fun MainScreen(
                                 DownloadWorkScheduler.enqueue(context, download.fileName, download.downloadLink)
                                 activeDownloads = DownloadQueueStore.getAll(context)
                             },
+                            onSolveCaptcha = { showCaptchaDialog = true },
                             onOpenDownload = { download ->
                                 if (!download.fileUri.isNullOrEmpty()) {
                                     openDownloadedFile(download.fileUri)
@@ -1718,6 +1720,7 @@ fun MainScreen(
                                 DownloadQueueStore.remove(context, download.id)
                                 activeDownloads = activeDownloads.filter { it.id != download.id }
                             },
+                            onSolveCaptcha = { showCaptchaDialog = true },
                             lastSyncedMs = lastSyncedMs
                         )
                     }
@@ -1913,12 +1916,20 @@ fun MainScreen(
                                 result
                             },
                             onDownloadChallan = { challan ->
-                                if (challan.downloadLink.contains(".aspx", ignoreCase = true)) {
-                                    feePrintChallan = challan
-                                } else {
-                                    val defaultName = "FeeChallan_${challan.semester.replace(" ", "_")}.pdf"
-                                    DownloadWorkScheduler.enqueue(context, defaultName, challan.downloadLink)
-                                    showAppMessage("Download started in background")
+                                scope.launch {
+                                    try {
+                                        runWithAutoRetry { viewModel.ensureSessionValid() }
+                                        if (challan.downloadLink.contains(".aspx", ignoreCase = true)) {
+                                            feePrintChallan = challan
+                                        } else {
+                                            val defaultName = "FeeChallan_${challan.semester.replace(" ", "_")}.pdf"
+                                            DownloadWorkScheduler.enqueue(context, defaultName, challan.downloadLink)
+                                            showAppMessage("Download started in background")
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e("MainActivity", "Failed to verify session before download", e)
+                                        showAppMessage("Failed to verify session: ${e.message}")
+                                    }
                                 }
                             },
                             onBack = {
@@ -2187,6 +2198,35 @@ fun MainScreen(
                         } finally {
                             isLoading = false
                         }
+                    }
+                } else {
+                    val uploadsToRetry = activeUploads.filter {
+                        (it.status == UploadQueueStatus.FAILED || it.status == UploadQueueStatus.FAILED_RETRY) &&
+                                (it.lastError?.contains("captcha", ignoreCase = true) == true || it.lastError?.contains("security", ignoreCase = true) == true)
+                    }
+                    uploadsToRetry.forEach { upload ->
+                        UploadQueueStore.remove(context, upload.id)
+                        UploadWorkScheduler.enqueue(
+                            context = context,
+                            assignmentTitle = upload.assignmentTitle,
+                            submitPageUrl = upload.submitPageUrl,
+                            fileUri = android.net.Uri.parse(upload.fileUri)
+                        )
+                    }
+                    if (uploadsToRetry.isNotEmpty()) {
+                        activeUploads = UploadQueueStore.getAll(context)
+                    }
+
+                    val downloadsToRetry = activeDownloads.filter {
+                        (it.status == DownloadQueueStatus.FAILED) &&
+                                (it.lastError?.contains("captcha", ignoreCase = true) == true || it.lastError?.contains("security", ignoreCase = true) == true)
+                    }
+                    downloadsToRetry.forEach { download ->
+                        DownloadQueueStore.remove(context, download.id)
+                        DownloadWorkScheduler.enqueue(context, download.fileName, download.downloadLink)
+                    }
+                    if (downloadsToRetry.isNotEmpty()) {
+                        activeDownloads = DownloadQueueStore.getAll(context)
                     }
                 }
             }
