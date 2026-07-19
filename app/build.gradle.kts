@@ -22,10 +22,10 @@ android {
 
     buildTypes {
         debug {
-            buildConfigField("String", "ANALYTICS_BASE_URL", "\"http://127.0.0.1:3000/\"")
+            buildConfigField("String", "ANALYTICS_BASE_URL", "\"https://assignly-analytics.vercel.app/\"")
         }
         release {
-            buildConfigField("String", "ANALYTICS_BASE_URL", "\"https://assignly.site/\"")
+            buildConfigField("String", "ANALYTICS_BASE_URL", "\"https://assignly-analytics.vercel.app/\"")
             isMinifyEnabled = true
             isShrinkResources = true
             signingConfig = signingConfigs.getByName("debug")

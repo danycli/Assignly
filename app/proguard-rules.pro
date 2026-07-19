@@ -36,3 +36,8 @@
     public static int w(...);
     public static int e(...);
 }
+
+# Keep Analytics Data Models for Gson Serialization
+-keepattributes Signature
+-keepattributes *Annotation*
+-keep class com.danycli.assignmentchecker.analytics.models.** { *; }

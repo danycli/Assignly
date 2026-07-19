@@ -13,6 +13,7 @@ import androidx.work.WorkerParameters
 import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.launch
 
 class DownloadWorker(
     appContext: Context,
@@ -99,35 +100,39 @@ object DownloadWorkScheduler {
         downloadLink: String
     ): String {
         val downloadId = UUID.randomUUID().toString()
-        DownloadQueueStore.upsert(
-            context = context,
-            download = QueuedDownload(
-                id = downloadId,
-                fileName = fileName,
-                downloadLink = downloadLink,
-                status = DownloadQueueStatus.QUEUED,
-                lastError = null,
-                createdAtEpochMs = System.currentTimeMillis()
+        val appContext = context.applicationContext
+        
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            DownloadQueueStore.upsert(
+                context = appContext,
+                download = QueuedDownload(
+                    id = downloadId,
+                    fileName = fileName,
+                    downloadLink = downloadLink,
+                    status = DownloadQueueStatus.QUEUED,
+                    lastError = null,
+                    createdAtEpochMs = System.currentTimeMillis()
+                )
             )
-        )
 
-        val request = OneTimeWorkRequestBuilder<DownloadWorker>()
-            .setInputData(
-                Data.Builder()
-                    .putString(DownloadWorker.KEY_DOWNLOAD_ID, downloadId)
-                    .putString(DownloadWorker.KEY_DOWNLOAD_LINK, downloadLink)
-                    .putString(DownloadWorker.KEY_FILE_NAME, fileName)
-                    .build()
-            )
-            .setConstraints(
-                Constraints.Builder()
-                    .setRequiredNetworkType(NetworkType.CONNECTED)
-                    .build()
-            )
-            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 20, TimeUnit.SECONDS)
-            .build()
+            val request = OneTimeWorkRequestBuilder<DownloadWorker>()
+                .setInputData(
+                    Data.Builder()
+                        .putString(DownloadWorker.KEY_DOWNLOAD_ID, downloadId)
+                        .putString(DownloadWorker.KEY_DOWNLOAD_LINK, downloadLink)
+                        .putString(DownloadWorker.KEY_FILE_NAME, fileName)
+                        .build()
+                )
+                .setConstraints(
+                    Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build()
+                )
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 20, TimeUnit.SECONDS)
+                .build()
 
-        WorkManager.getInstance(context).enqueue(request)
+            WorkManager.getInstance(appContext).enqueue(request)
+        }
         return downloadId
     }
 }

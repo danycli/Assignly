@@ -21,8 +21,9 @@ data class QueuedDownload(
 object DownloadQueueStore {
     private const val PREFS_NAME = "assignly_download_queue"
     private const val KEY_DOWNLOADS = "downloads_json"
+    private val lock = Any()
 
-    fun getAll(context: Context): List<QueuedDownload> {
+    fun getAll(context: Context): List<QueuedDownload> = synchronized(lock) {
         val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getString(KEY_DOWNLOADS, null)
             ?: return emptyList()
@@ -37,7 +38,7 @@ object DownloadQueueStore {
         }.getOrDefault(emptyList())
     }
 
-    fun upsert(context: Context, download: QueuedDownload) {
+    fun upsert(context: Context, download: QueuedDownload) = synchronized(lock) {
         val updated = getAll(context).toMutableList()
         val existingIndex = updated.indexOfFirst { it.id == download.id }
         if (existingIndex >= 0) {
@@ -48,7 +49,7 @@ object DownloadQueueStore {
         saveAll(context, updated)
     }
 
-    fun updateStatus(context: Context, id: String, status: DownloadQueueStatus, lastError: String? = null, fileUri: String? = null) {
+    fun updateStatus(context: Context, id: String, status: DownloadQueueStatus, lastError: String? = null, fileUri: String? = null) = synchronized(lock) {
         val updated = getAll(context).map { download ->
             if (download.id == id) {
                 download.copy(
@@ -63,12 +64,12 @@ object DownloadQueueStore {
         saveAll(context, updated)
     }
 
-    fun remove(context: Context, id: String) {
+    fun remove(context: Context, id: String) = synchronized(lock) {
         val updated = getAll(context).filterNot { it.id == id }
         saveAll(context, updated)
     }
 
-    fun clearFinished(context: Context) {
+    fun clearFinished(context: Context) = synchronized(lock) {
         val remaining = getAll(context).filterNot {
             it.status == DownloadQueueStatus.SUCCESS || it.status == DownloadQueueStatus.FAILED
         }
@@ -97,7 +98,7 @@ object DownloadQueueStore {
             .apply()
     }
 
-    fun clear(context: Context) {
+    fun clear(context: Context) = synchronized(lock) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .clear()

@@ -329,6 +329,29 @@ fun deleteLocalFile(context: Context, uriString: String): Boolean {
     }
 }
 
+fun renameLocalFile(context: Context, uriString: String, newName: String): Boolean {
+    return try {
+        val uri = Uri.parse(uriString)
+        if (uri.scheme == "file") {
+            val file = File(uri.path ?: return false)
+            val newFile = File(file.parent, newName)
+            file.renameTo(newFile)
+        } else {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, newName)
+                }
+                context.contentResolver.update(uri, values, null, null) > 0
+            } else {
+                false
+            }
+        }
+    } catch (e: Exception) {
+        Log.e("UiUtils", "Failed to rename file", e)
+        false
+    }
+}
+
 fun writeBytesToUri(context: Context, destinationUri: Uri, bytes: ByteArray): Boolean {
     return try {
         val outputStream = context.contentResolver.openOutputStream(destinationUri)
