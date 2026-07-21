@@ -22,3 +22,16 @@ signing.properties
 keystore.properties
 credentials.json
 .agents/
+
+.idea/
+.kotlin/
+dashboard/
+*.txt
+*.class
+temp_*.kt
+scratch/
+test_url.kts
+TestUrl.java
+skills-lock.json
+apk_release
+desktop_src
