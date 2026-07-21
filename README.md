@@ -89,6 +89,17 @@ Check your performance without the stress:
 
 ---
 
+### Downloads Manager
+
+Keep all your course files organized locally:
+
+- **Centralized Storage**: Access all your downloaded PDFs, PPTs, and Word docs in one place.
+- **Offline Access**: View your files even without internet connectivity.
+- **File Actions**: Rename, share, or delete downloaded files directly from the app.
+- **Concurrent Downloads**: Safely download multiple files simultaneously with a resilient background queue.
+
+---
+
 ### Secure & Private
 
 - **Biometric App Lock**: Secure your academic data with Fingerprint/Face ID.
@@ -141,6 +152,8 @@ app/src/main/java/com/danycli/assignmentchecker/
     ├── AssignmentsScreen.kt     # Pending assignments & filters
     ├── HistoryScreen.kt         # Submitted assignment logs
     ├── TimetableScreen.kt       # Live class schedule
+    ├── CourseDetailScreen.kt    # Course content & premium UI details
+    ├── DownloadsScreen.kt       # Downloaded files manager (Rename, Share, Delete)
     ├── AttendanceScreen.kt      # Attendance logs & insights
     ├── GradesScreen.kt          # Result history (GPA/CGPA)
     ├── MarksScreen.kt           # Internal sessionals/quizzes marks
