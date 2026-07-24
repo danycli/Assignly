@@ -1,28 +1,42 @@
 <p align="center">
-  <!-- <img src="app/src/main/ic_launcher-playstore.png" width="200" height="200" alt="Assignly Logo"/> -->
-  <img width="200" height="200" alt="logo" src="https://github.com/user-attachments/assets/24240133-4ae3-49c5-951c-91e247320900" />
+  <img width="200" height="200" alt="Assignly Logo" src="https://github.com/user-attachments/assets/24240133-4ae3-49c5-951c-91e247320900"/>
 </p>
 
 <h1 align="center">Assignly — COMSATS Student Portal Client</h1>
 
+<h3 align="center">
+🏆 1st Prize Winner • Tech Fusion 2026
+</h3>
+
 <p align="center">
-  A native Android client for COMSATS University Islamabad, Abbottabad Campus (CUIIT) students<br/>
-  to manage academic life, track attendance, view results, and submit assignments — without ever opening a browser.
+A native Android client for COMSATS University Islamabad, Abbottabad Campus (CUIATD)<br/>
+to manage academic life, track attendance, view results, and submit assignments without ever opening a browser.
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Platform-Android%208.0%2B-brightgreen?style=flat-square" alt="Platform"/>
-  <img src="https://img.shields.io/badge/Language-Kotlin-7F52FF?style=flat-square" alt="Language"/>
-  <img src="https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4?style=flat-square" alt="UI"/>
-  <img src="https://img.shields.io/badge/Min%20SDK-API%2026-orange?style=flat-square" alt="Min SDK"/>
-  <img src="https://img.shields.io/badge/Target%20SDK-API%2035-blue?style=flat-square" alt="Target SDK"/>
+
+<img src="https://img.shields.io/badge/🏆_Tech_Fusion-2026_Winner-F6C343?style=for-the-badge" />
+<img src="https://img.shields.io/badge/🥇-1st_Prize-success?style=for-the-badge" />
+
+</p>
+
+<p align="center">
+
+<img src="https://img.shields.io/badge/Platform-Android%208.0+-brightgreen?style=flat-square"/>
+<img src="https://img.shields.io/badge/Language-Kotlin-7F52FF?style=flat-square"/>
+<img src="https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4?style=flat-square"/>
+<img src="https://img.shields.io/badge/Min%20SDK-API%2026-orange?style=flat-square"/>
+<img src="https://img.shields.io/badge/Target%20SDK-API%2035-blue?style=flat-square"/>
+
 </p>
 
 ---
 
-> **Battle-tested.** This app has been personally used by the developer to navigate academic life and submit real assignments through the COMSATS student portal. Every feature has been validated in production, not just on paper.
-
----
+> ## 🏆 Award Recognition
+>
+> **Assignly won 🥇 1st Prize at Tech Fusion 2026**, a university technology competition recognizing innovative software projects with real-world impact.
+>
+> The project was selected for transforming the COMSATS Student Information System into a modern native Android experience focused on usability, performance, and productivity for students.
 
 ## Overview
 
@@ -178,6 +192,21 @@ SP25-BCS-001
 The app automatically normalises your input and handles the portal's complex session selection logic for you.
 
 ---
+
+---
+
+# 🏅 Achievements
+
+<div align="center">
+
+| Award | Event | Year |
+|:------:|:------|:----:|
+| 🥇 **1st Prize** | **Tech Fusion** | **2026** |
+
+</div>
+
+> This recognition reflects the project's focus on solving real problems faced by COMSATS students through thoughtful design, modern Android development, and practical functionality.
+
 
 ## Disclaimer
 
