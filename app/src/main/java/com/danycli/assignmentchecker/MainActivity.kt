@@ -649,12 +649,12 @@ fun MainScreen(
         }
     }
 
-    suspend fun attemptPortalLoginSilent(usernameInput: String, passwordInput: String): LoginResult {
+    suspend fun attemptPortalLoginSilent(usernameInput: String, passwordInput: String, captchaToken: String? = null): LoginResult {
         val normalizedUser = usernameInput.trim().uppercase()
         viewModel.syncWebViewSession(context)
         val result = try {
             withTimeout(35_000) {
-                retryIo { viewModel.login(normalizedUser, passwordInput) }
+                retryIo { viewModel.login(normalizedUser, passwordInput, captchaToken) }
             }
         } catch (e: Exception) {
             LoginResult.Error("Silent login failed: ${e.message}")
@@ -1089,14 +1089,15 @@ fun MainScreen(
         usernameInput: String,
         passwordInput: String,
         saveCredentialsOnSuccess: Boolean,
-        isAutoLogin: Boolean = false
+        isAutoLogin: Boolean = false,
+        captchaToken: String? = null
     ) {
         val normalizedUser = usernameInput.trim().uppercase()
         suspend fun performLoginRequest(): LoginResult {
             viewModel.syncWebViewSession(context)
             return try {
                 withTimeout(45_000) {
-                    retryIo { viewModel.login(normalizedUser, passwordInput) }
+                    retryIo { viewModel.login(normalizedUser, passwordInput, captchaToken) }
                 }
             } catch (e: TimeoutCancellationException) {
                 LoginResult.Error("Login timed out. Please try again.")
@@ -1284,7 +1285,7 @@ fun MainScreen(
                         LoginScreen(
                             isLoading = isLoading,
                             onOpenDisclaimer = { uriHandler.openUri(DISCLAIMER_URL) },
-                            onLogin = { user, pass ->
+                            onLogin = { user, pass, token ->
                                 loadingTargetScreen = ScreenType.PENDING
                                 isLoading = true
                                 scope.launch {
@@ -1293,7 +1294,8 @@ fun MainScreen(
                                             usernameInput = user,
                                             passwordInput = pass,
                                             saveCredentialsOnSuccess = true,
-                                            isAutoLogin = false
+                                            isAutoLogin = false,
+                                            captchaToken = token
                                         )
                                     } finally {
                                         isLoading = false

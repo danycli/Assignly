@@ -659,17 +659,7 @@ class PortalRepository {
     private fun isLoginPage(url: String, html: String): Boolean {
         if (url.contains("Login.aspx", true)) return true
         val doc = Jsoup.parse(html)
-        return doc.select("input[name*=txtUsername], input[id*=txtUsername], input[name*=btnLogin], input[id*=btnLogin]").isNotEmpty()
-    }
-
-    private fun hasStandardPortalLoginForm(html: String): Boolean {
-        val doc = Jsoup.parse(html)
-        val hasUserLikeField = doc.select(
-            "input[name*=txtUsername], input[id*=txtUsername], input[name*=RollNo], input[id*=RollNo], " +
-                "input[name*=roll], input[id*=roll]"
-        ).isNotEmpty()
-        val hasPasswordField = doc.select("input[type=password], input[name*=password], input[id*=password]").isNotEmpty()
-        return hasUserLikeField && hasPasswordField
+        return com.danycli.assignmentchecker.auth.LoginFormAnalyzer.findBestLoginForm(doc) != null
     }
 
     private fun isSecurityVerificationPage(url: String?, html: String?): Boolean {
@@ -710,15 +700,19 @@ class PortalRepository {
             "secure connection failed"
         ).any { marker -> normalizedHtml.contains(marker) }
 
-        if (hasStandardPortalLoginForm(html.orEmpty())) {
+        if (isLoginPage(normalizedUrl, html.orEmpty())) {
             return false
         }
 
         return hasConnectionPrivacyLanguage || (hasChallengeArtifacts && hasChallengeLanguage)
     }
 
-    private fun isSecurityVerificationResponse(response: Response, resolvedUrl: String, body: String): Boolean {
-        if (isSecurityVerificationPage(resolvedUrl, body)) {
+    private fun isSecurityVerificationResponse(response: Response, url: String, body: String): Boolean {
+        if (body.contains("g-recaptcha") || body.contains("hCaptcha") || body.contains("cf-turnstile") || url.contains("captcha")) {
+            return true
+        }
+
+        if (isSecurityVerificationPage(url, body)) {
             return true
         }
 
@@ -920,7 +914,7 @@ class PortalRepository {
         }
     }
 
-    fun login(username: String, password: String, pacing: LoginPacing? = null): LoginResult {
+    fun login(username: String, password: String, pacing: LoginPacing? = null, captchaToken: String? = null): LoginResult {
         return try {
             val loginUrl = getPortalLoginUrl()
             val originalUsername = username.trim()
@@ -969,182 +963,23 @@ class PortalRepository {
                 return LoginResult.CaptchaRequired
             }
 
-            val doc = Jsoup.parse(initialHtml)
-            val form = doc.select("form").first()
-            if (form == null) {
-                Log.e("PortalAuth", "Form not found in HTML")
-                return LoginResult.Error("Form not found")
-            }
-            val formBuilder = FormBody.Builder()
+            val adaptiveResult = com.danycli.assignmentchecker.auth.AdaptiveLoginEngine.buildLoginFormBody(
+                html = initialHtml,
+                usernameInput = originalUsername,
+                passwordInput = password,
+                captchaToken = captchaToken
+            )
             
-            // Registration Number Parts: Parse "SP25-BCS-001" into 3 parts
-            val parts = registrationParts
-            val sessCode = parts.getOrNull(0) ?: ""           // "SP25"
-            val progCode = parts.getOrNull(1) ?: ""           // "BCS"
-            val rollNumber = parts.getOrNull(2) ?: ""         // "001"
-            val sessSeason = if (sessCode.contains("SP", true)) "Spring" else "Fall"
-            val sessYear = sessCode.filter { it.isDigit() }
-
-            debugLog("Parsed registration metadata")
-
-            // 2. Find the three registration-related fields
-            var sessionFieldName = ""
-            var programFieldName = ""
-            var rollnoFieldName = ""
-            var userFieldName = ""
-            var passFieldName = ""
-            var btnFieldName = ""
-            var btnValue = "Login"
-
-            // First pass to find all field names
-            debugLog("Step 2: Scanning form fields...")
-            form.select("input, select").forEach { el ->
-                val name = el.attr("name")
-                val id = el.attr("id")
-                val type = el.attr("type")
-                
-                if (el.tagName() == "select") {
-                    debugLog("Scanning SELECT field")
-                    val normalizedName = normalizeToken(name)
-                    val normalizedId = normalizeToken(id)
-                    
-                    when {
-                        normalizedName.contains("session") || normalizedId.contains("session") ||
-                        normalizedName.contains("dropdown") && normalizedName.contains("sess") ||
-                        name.contains("Session", true) -> {
-                            sessionFieldName = name
-                            debugLog("Found session field")
-                        }
-                        normalizedName.contains("program") || normalizedId.contains("program") ||
-                        normalizedName.contains("dropdown") && normalizedName.contains("prog") ||
-                        name.contains("Program", true) -> {
-                            programFieldName = name
-                            debugLog("Found program field")
-                        }
-                    }
-                } else {
-                    debugLog("Scanning input field")
-                    val normalizedName = normalizeToken(name)
-                    val normalizedId = normalizeToken(id)
-                    
-                    when {
-                        type.equals("password", true) ||
-                        normalizedName.contains("password") ||
-                        normalizedId.contains("password") -> {
-                            passFieldName = name
-                            debugLog("Found password field")
-                        }
-                        normalizedName.contains("rollno") || normalizedName.contains("roll") ||
-                        normalizedId.contains("rollno") || normalizedId.contains("roll") ||
-                        name.contains("RollNo", true) -> {
-                            rollnoFieldName = name
-                            debugLog("Found roll number field")
-                        }
-                        normalizedName.contains("username") || normalizedName.contains("userid") ||
-                        normalizedId.contains("username") ||
-                        name.contains("Username", true) -> {
-                            userFieldName = name
-                            debugLog("Found username field")
-                        }
-                    }
-                }
-            }
-
-            // Find login button
-            form.select("input[type=submit], button[type=submit], button[name]").forEach { el ->
-                val name = el.attr("name")
-                val normalizedName = normalizeToken(name)
-                if (normalizedName.contains("login") || normalizedName.contains("signin") || 
-                    name.contains("btn", true)) {
-                    btnFieldName = name
-                    btnValue = el.attr("value").ifEmpty { el.text().ifEmpty { "Login" } }
-                    debugLog("Found login button")
-                }
-            }
-
-            debugLog("Step 3: Extracting form fields and tokens...")
-            val submittedFields = mutableMapOf<String, String>()
-
-            // Second pass to populate ALL fields (hidden tokens + specific dropdowns)
-            form.select("input, select").forEach { el ->
-                val name = el.attr("name")
-                if (name.isEmpty() || name == userFieldName || name == passFieldName || name == btnFieldName ||
-                    name == sessionFieldName || name == programFieldName || name == rollnoFieldName) return@forEach
-                
-                var value = el.attr("value")
-                
-                if (el.tagName() == "select") {
-                    val options = el.select("option")
-                    debugLog("SELECT field options parsed")
-                    value = el.select("option[selected]").attr("value").ifEmpty { options.firstOrNull()?.attr("value") ?: "" }
-                } else {
-                    debugLog("Hidden/input field parsed")
-                }
-                submittedFields[name] = value
-                formBuilder.add(name, value)
-            }
-
-            // Add Session field
-            if (sessionFieldName.isNotEmpty()) {
-                val sessionDropdown = form.selectFirst("select[name=$sessionFieldName]")
-                if (sessionDropdown != null) {
-                    val options = sessionDropdown.select("option")
-                    val matched = options.find { 
-                        (it.text().contains(sessSeason, true) && it.text().contains(sessYear)) || 
-                        it.attr("value").contains(sessCode, true) 
-                    }
-                    val sessionValue = matched?.attr("value") ?: options.firstOrNull()?.attr("value") ?: ""
-                    debugLog("Session dropdown value selected")
-                    submittedFields[sessionFieldName] = sessionValue
-                    formBuilder.add(sessionFieldName, sessionValue)
-                }
-            }
-
-            // Add Program field
-            if (programFieldName.isNotEmpty()) {
-                val programDropdown = form.selectFirst("select[name=$programFieldName]")
-                if (programDropdown != null) {
-                    val options = programDropdown.select("option")
-                    val matched = options.find {
-                        it.text().equals(progCode, true) ||
-                        it.attr("value").equals(progCode, true) ||
-                        normalizeToken(it.text()).contains(normalizeToken(progCode)) ||
-                        normalizeToken(it.attr("value")).contains(normalizeToken(progCode))
-                    }
-                    val programValue = matched?.attr("value") ?: options.firstOrNull()?.attr("value") ?: ""
-                    debugLog("Program dropdown value selected")
-                    submittedFields[programFieldName] = programValue
-                    formBuilder.add(programFieldName, programValue)
-                }
-            }
-
-            // Add Roll Number field
-            if (rollnoFieldName.isNotEmpty()) {
-                debugLog("Roll number field populated")
-                submittedFields[rollnoFieldName] = rollNumber
-                formBuilder.add(rollnoFieldName, rollNumber)
-            }
-
-            // Add the credentials using discovered names
-            debugLog("Step 4: Adding credentials...")
-            // Add password (only if we found a password field)
-            if (passFieldName.isNotEmpty()) {
-                formBuilder.add(passFieldName, password)
-                submittedFields[passFieldName] = password
-                debugLog("Password field populated")
+            if (adaptiveResult == null) {
+                Log.e("PortalAuth", "AdaptiveLoginEngine failed to parse the form")
+                return LoginResult.Error("Form not found or could not be parsed")
             }
             
-            // Add login button if found
-            if (btnFieldName.isNotEmpty()) {
-                formBuilder.add(btnFieldName, btnValue)
-                submittedFields[btnFieldName] = btnValue
-                debugLog("Login button field populated")
-            }
+            val (formBody, formAction) = adaptiveResult
 
             // 3. POST the login
             debugLog("Step 5: Posting login request...")
             pauseForLoginPacing(pacing)
-            val formAction = form.attr("action")
             val postUrl = when {
                 formAction.isBlank() -> loginUrl
                 formAction.startsWith("http", true) -> formAction
@@ -1154,7 +989,7 @@ class PortalRepository {
             debugLog("Posting to URL: ${sanitizeUrl(postUrl)}")
             val postRequest = Request.Builder()
                 .url(postUrl)
-                .post(formBuilder.build())
+                .post(formBody)
                 .header("Content-Type", "application/x-www-form-urlencoded")
                 .header("Referer", loginUrl)
                 .header("Origin", baseUrl)
@@ -1193,7 +1028,18 @@ class PortalRepository {
             debugLog("Contains 'Logout': ${finalHtml.contains("Logout", true)}")
             debugLog("Contains 'CoursePortal': ${finalHtml.contains("CoursePortal", true)}")
             debugLog("Contains 'Login.aspx': ${finalUrl.contains("Login.aspx", true)}")
-            debugLog("Contains 'txtUsername' (login form): ${finalHtml.contains("txtUsername", true)}")
+            
+            // LOG HTML SNIPPET FOR DEBUGGING
+            try {
+                val snippet = finalHtml.take(2000)
+                android.util.Log.e("PortalAuth", "SERVER RETURNED HTML SNIPPET:\n$snippet")
+                
+                val errDoc = org.jsoup.Jsoup.parse(finalHtml)
+                val errMsg = errDoc.select("#lblMsg, #lblError, .alert, .text-danger, span[id*=lbl]").text()
+                if (errMsg.isNotEmpty()) {
+                    android.util.Log.e("PortalAuth", "SERVER ERROR MESSAGE: $errMsg")
+                }
+            } catch (e: Exception) {}
 
             // 4. Success Check: verify by opening a protected page with same cookies.
             debugLog("Step 7: Verifying session on protected page...")

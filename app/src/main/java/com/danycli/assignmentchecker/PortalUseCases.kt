@@ -40,9 +40,9 @@ class LoadHistoryUseCase(private val repository: PortalRepository) {
 }
 
 class LoginUseCase(private val repository: PortalRepository) {
-    suspend operator fun invoke(username: String, password: String): LoginResult {
+    suspend operator fun invoke(username: String, password: String, captchaToken: String? = null): LoginResult {
         return withContext(Dispatchers.IO) {
-            repository.login(username, password)
+            repository.login(username, password, captchaToken = captchaToken)
         }
     }
 }

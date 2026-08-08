@@ -72,7 +72,7 @@ open class MainViewModel : ViewModel() {
         repository.fetchFeeDetails()
     }
 
-    open suspend fun login(username: String, password: String): LoginResult = loginUseCase(username, password)
+    open suspend fun login(username: String, password: String, captchaToken: String? = null): LoginResult = loginUseCase(username, password, captchaToken)
 
     open suspend fun fetchInstructionFiles(downloadLink: String): InstructionFilesResult =
         fetchInstructionFilesUseCase(downloadLink)

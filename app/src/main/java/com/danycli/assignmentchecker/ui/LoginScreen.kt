@@ -26,6 +26,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.onFocusChanged
@@ -94,7 +95,7 @@ fun AppSplashScreen() {
 fun LoginScreen(
     isLoading: Boolean,
     onOpenDisclaimer: () -> Unit,
-    onLogin: (String, String) -> Unit
+    onLogin: (String, String, String?) -> Unit
 ) {
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -110,6 +111,8 @@ fun LoginScreen(
     var isDropdownExpanded by remember { mutableStateOf(false) }
     var textFieldSize by remember { mutableStateOf(androidx.compose.ui.geometry.Size.Zero) }
 
+    var isGeneratingToken by remember { mutableStateOf(false) }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -124,6 +127,58 @@ fun LoginScreen(
             ),
         contentAlignment = Alignment.Center
     ) {
+        if (isGeneratingToken) {
+            LaunchedEffect(Unit) {
+                kotlinx.coroutines.delay(10_000)
+                if (isGeneratingToken) {
+                    isGeneratingToken = false
+                    onLogin(username, password, null)
+                }
+            }
+            Box(modifier = Modifier.size(1.dp).alpha(0f)) {
+                androidx.compose.ui.viewinterop.AndroidView(
+                    factory = { ctx ->
+                        android.webkit.WebView(ctx).apply {
+                            settings.javaScriptEnabled = true
+                            settings.domStorageEnabled = true
+                            webChromeClient = android.webkit.WebChromeClient()
+                            addJavascriptInterface(object : Any() {
+                                @android.webkit.JavascriptInterface
+                                fun onTokenReceived(token: String) {
+                                    post {
+                                        if (isGeneratingToken) {
+                                            isGeneratingToken = false
+                                            onLogin(username, password, token)
+                                        }
+                                    }
+                                }
+                            }, "AndroidCaptcher")
+
+                            val htmlData = """
+                                <html>
+                                  <head>
+                                    <script src="https://www.google.com/recaptcha/api.js?render=6LejUXMtAAAAACrfFucz1Cnc1DlcLVJ4RIikQrO6"></script>
+                                  </head>
+                                  <body>
+                                    <script>
+                                      grecaptcha.ready(function() {
+                                          grecaptcha.execute('6LejUXMtAAAAACrfFucz1Cnc1DlcLVJ4RIikQrO6', {action: 'login'}).then(function(token) {
+                                              AndroidCaptcher.onTokenReceived(token);
+                                          }).catch(function(err) {
+                                              AndroidCaptcher.onTokenReceived("");
+                                          });
+                                      });
+                                    </script>
+                                  </body>
+                                </html>
+                            """.trimIndent()
+                            loadDataWithBaseURL("https://sis.cuiatd.edu.pk/", htmlData, "text/html", "UTF-8", null)
+                        }
+                    }
+                )
+            }
+        }
+        
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -352,7 +407,7 @@ fun LoginScreen(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Button(
-                    onClick = { onLogin(username, password) },
+                    onClick = { isGeneratingToken = true },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(58.dp),
@@ -361,9 +416,9 @@ fun LoginScreen(
                         containerColor = MaterialTheme.colorScheme.primary,
                         disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
                     ),
-                    enabled = !isLoading && username.isNotBlank() && password.isNotBlank()
+                    enabled = !isLoading && !isGeneratingToken && username.isNotBlank() && password.isNotBlank()
                 ) {
-                    if (isLoading) {
+                    if (isLoading || isGeneratingToken) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(20.dp),
                             color = MaterialTheme.colorScheme.onPrimary,
@@ -421,7 +476,6 @@ fun LoginScreen(
         }
     }
 }
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CaptchaWebViewDialog(
