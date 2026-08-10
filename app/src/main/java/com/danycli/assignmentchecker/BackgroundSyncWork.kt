@@ -109,6 +109,15 @@ class AssignmentSyncWorker(
                         Log.e("AssignmentSyncWorker", "Failed to background-fetch timetable: ${err.message}")
                     }
 
+                    // Fetch and sync Exam Entry Coupon dates
+                    runCatching {
+                        val couponDates = repository.fetchExamEntryCouponDates()
+                        ExamCouponCacheStore.saveSnapshot(applicationContext, couponDates)
+                        Log.d("AssignmentSyncWorker", "Exam coupon data synchronized. Dates updated: ${couponDates.size}")
+                    }.onFailure { err ->
+                        Log.e("AssignmentSyncWorker", "Failed to background-fetch exam coupon dates: ${err.message}")
+                    }
+
                     // Fetch and sync student profile & photo in the background
                     runCatching {
                         val prof = repository.fetchStudentProfile()

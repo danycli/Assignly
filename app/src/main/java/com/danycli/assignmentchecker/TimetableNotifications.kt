@@ -54,6 +54,17 @@ object TimetableNotificationManager {
 
         snapshot.lectures.forEach { lecture ->
             val triggerAt = calculateNextClassTriggerEpochMs(lecture.day, lecture.startTime) ?: return@forEach
+            
+            val localDateStr = java.time.Instant.ofEpochMilli(triggerAt)
+                .atZone(ZoneId.systemDefault())
+                .toLocalDate()
+                .format(DateTimeFormatter.ISO_LOCAL_DATE)
+
+            if (ExamCouponManager.isExamCouponDate(context, localDateStr)) {
+                Log.d("TimetableNotifications", "Skipping alarm for $localDateStr due to Exam Entry Coupon date")
+                return@forEach
+            }
+
             if (triggerAt <= now - 60_000) { // If it was supposed to trigger more than 1 min ago, skip
                 return@forEach
             }

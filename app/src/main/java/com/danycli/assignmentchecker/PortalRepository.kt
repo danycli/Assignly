@@ -9,6 +9,7 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.io.File
 import java.io.IOException
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -5128,5 +5129,61 @@ class PortalRepository {
         } else {
             Result.failure(PortalSystemException(extractedMessage ?: "Incorrect current password or invalid password change request."))
         }
+    }
+
+    fun fetchExamEntryCouponDates(): Set<String> {
+        val url = "$baseUrl/ExamEntry.aspx"
+        val request = Request.Builder()
+            .url(url)
+            .header("Referer", "$baseUrl/Dashboard.aspx")
+            .header("User-Agent", userAgent)
+            .build()
+        
+        val response = client.newCall(request).execute()
+        if (!response.isSuccessful) {
+            throw PortalSystemException("fetchExamEntryCouponDates GET ExamEntry.aspx failed HTTP ${response.code}")
+        }
+        
+        val html = response.body?.string() ?: throw PortalSystemException("fetchExamEntryCouponDates ExamEntry.aspx empty response")
+        
+        val doc = Jsoup.parse(html)
+        detectPortalSystemErrors(html)
+        if (com.danycli.assignmentchecker.auth.LoginFormAnalyzer.findBestLoginForm(doc) != null) {
+            throw PortalSystemException("Session expired, redirected to login page.")
+        }
+        
+        val dates = mutableSetOf<String>()
+        val datePattern = Regex("""\b(\d{1,2})[-/]([A-Za-z]{3}|\d{1,2})[-/](\d{4})\b""")
+        val formatter1 = DateTimeFormatter.ofPattern("d/M/yyyy", Locale.US)
+        val formatter2 = DateTimeFormatter.ofPattern("d-MMM-yyyy", Locale.US)
+        val formatter3 = DateTimeFormatter.ofPattern("dd/MM/yyyy", Locale.US)
+        
+        doc.select("table").forEach { table ->
+            val text = table.text()
+            datePattern.findAll(text).forEach { match ->
+                val dateStr = match.value
+                try {
+                    val dt = if (dateStr.contains("-")) {
+                        val parts = dateStr.split("-")
+                        if (parts.size == 3) {
+                            val mon = parts[1].lowercase().replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() }
+                            val normalizedDateStr = "${parts[0]}-$mon-${parts[2]}"
+                            LocalDate.parse(normalizedDateStr, formatter2)
+                        } else {
+                            LocalDate.parse(dateStr, formatter2)
+                        }
+                    } else if (dateStr.length == 10 && dateStr.contains("/")) {
+                        LocalDate.parse(dateStr, formatter3)
+                    } else {
+                        LocalDate.parse(dateStr, formatter1)
+                    }
+                    dates.add(dt.format(DateTimeFormatter.ISO_LOCAL_DATE))
+                } catch (e: Exception) {
+                    // Ignore parsing errors for individual matches
+                }
+            }
+        }
+        
+        return dates
     }
 }
