@@ -106,6 +106,7 @@ private fun AppEntry() {
     var startupCredentials by remember { mutableStateOf<Pair<String, String>?>(null) }
     var appSettings by remember { mutableStateOf(AppSettingsStore.get(context)) }
     var showNotificationDialog by remember { mutableStateOf(false) }
+    var startupUpdateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
 
     // Permission launcher for initial prompt
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -148,6 +149,17 @@ private fun AppEntry() {
         ) {
             showNotificationDialog = true
         }
+        
+        // Foreground Update Check
+        val updateInfo = viewModel.checkForegroundUpdate(context)
+        if (updateInfo != null) {
+            val updateState = UpdateNotifier.maybeNotify(context, updateInfo)
+            if (updateState == UpdateState.NOTIFICATION_UNAVAILABLE || updateState == UpdateState.UPDATE_AVAILABLE) {
+                // If system notification failed (e.g., permission denied) and we haven't already deduplicated it,
+                // show the in-app fallback dialog.
+                startupUpdateInfo = updateInfo
+            }
+        }
     }
 
     AssignmentCheckerTheme(themeMode = appSettings.themeMode) {
@@ -159,7 +171,8 @@ private fun AppEntry() {
                 initialCredentials = startupCredentials,
                 hasPerformedInitialCredentialCheck = true,
                 appSettings = appSettings,
-                onSettingsChange = { appSettings = it }
+                onSettingsChange = { appSettings = it },
+                initialUpdateInfo = startupUpdateInfo
             )
         }
 
@@ -384,7 +397,8 @@ fun MainScreen(
     initialCredentials: Pair<String, String>? = null,
     hasPerformedInitialCredentialCheck: Boolean = false,
     appSettings: AppSettings,
-    onSettingsChange: (AppSettings) -> Unit
+    onSettingsChange: (AppSettings) -> Unit,
+    initialUpdateInfo: AppUpdateInfo? = null
 ) {
     var isLoggedIn by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(initialCredentials != null) }
@@ -415,7 +429,7 @@ fun MainScreen(
     var batchReportToShow by remember { mutableStateOf<BatchDownloadReport?>(null) }
     var pendingCaptchaCredentials by remember { mutableStateOf<Pair<String, String>?>(null) }
     var showCaptchaDialog by remember { mutableStateOf(false) }
-    var updateDialogInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
+    var updateDialogInfo by remember { mutableStateOf<AppUpdateInfo?>(initialUpdateInfo) }
     var pendingExitConfirmation by remember { mutableStateOf(false) }
     var isPendingRefreshing by remember { mutableStateOf(false) }
     val context = LocalContext.current

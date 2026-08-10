@@ -54,11 +54,18 @@ class AssignmentSyncWorker(
     override suspend fun doWork(): Result {
         val updateInfo = withContext(Dispatchers.IO) { fetchAppUpdateInfo(applicationContext, force = false) }
         val settings = AppSettingsStore.get(applicationContext)
-        if (settings.updateNotificationsEnabled &&
-            updateInfo != null &&
-            updateInfo.latestVersionCode > BuildConfig.VERSION_CODE
-        ) {
-            UpdateNotifier.maybeNotify(applicationContext, updateInfo)
+        
+        if (settings.updateNotificationsEnabled) {
+            if (updateInfo != null) {
+                if (updateInfo.latestVersionCode > BuildConfig.VERSION_CODE) {
+                    Log.d("AssignmentSyncWorker", "UpdateAvailable: Found version ${updateInfo.latestVersionCode}")
+                    UpdateNotifier.maybeNotify(applicationContext, updateInfo)
+                } else {
+                    Log.d("AssignmentSyncWorker", "NoUpdateAvailable: Current version is up to date")
+                }
+            } else {
+                Log.w("AssignmentSyncWorker", "UpdateCheckFailed: fetchAppUpdateInfo returned null")
+            }
         }
 
         val credentials = CredentialsStore.get(applicationContext)

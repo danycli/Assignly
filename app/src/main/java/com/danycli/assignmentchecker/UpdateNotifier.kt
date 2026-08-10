@@ -10,17 +10,44 @@ import android.os.Build
 import android.graphics.BitmapFactory
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import android.util.Log
 
 object UpdateNotifier {
     private const val CHANNEL_ID = "assignly_updates"
     private const val CHANNEL_NAME = "App updates"
     private const val NOTIFICATION_ID = 1001
 
-    fun maybeNotify(context: Context, updateInfo: AppUpdateInfo) {
-        if (!UpdateNotificationStore.shouldNotifyToday(context)) return
-        if (!NotificationGate.areNotificationsEnabled(context)) return
+    fun maybeNotify(context: Context, updateInfo: AppUpdateInfo): UpdateState {
+        val currentVersion = com.danycli.assignmentchecker.BuildConfig.VERSION_CODE
+        if (updateInfo.latestVersionCode <= currentVersion) {
+            Log.d("UpdateNotifier", "Remote version ${updateInfo.latestVersionCode} is not newer than installed version $currentVersion.")
+            return UpdateState.NO_UPDATE
+        }
+
+        if (UpdateNotificationStore.hasNotified(context, updateInfo.latestVersionCode)) {
+            Log.d("UpdateNotifier", "Notification deduplicated: Already notified for version ${updateInfo.latestVersionCode}")
+            return UpdateState.ALREADY_NOTIFIED
+        }
+        
+        if (!NotificationGate.areNotificationsEnabled(context)) {
+            Log.w("UpdateNotifier", "NotificationPermissionDenied: Cannot show update notification for ${updateInfo.latestVersionCode}")
+            return UpdateState.NOTIFICATION_UNAVAILABLE
+        }
+        
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = notificationManager.getNotificationChannel(CHANNEL_ID)
+            if (channel != null && channel.importance == NotificationManager.IMPORTANCE_NONE) {
+                Log.w("UpdateNotifier", "NotificationChannelDisabled: Cannot show update notification for ${updateInfo.latestVersionCode}")
+                return UpdateState.NOTIFICATION_UNAVAILABLE
+            }
+        }
+        
         showUpdateNotification(context, updateInfo)
-        UpdateNotificationStore.markNotifiedToday(context, updateInfo.latestVersionCode)
+        // Directive 4: SAVE lastNotifiedVersionCode ONLY AFTER SUCCESSFUL DELIVERY
+        UpdateNotificationStore.markNotified(context, updateInfo.latestVersionCode)
+        Log.i("UpdateNotifier", "NotificationPosted: Update notification shown for ${updateInfo.latestVersionCode}")
+        return UpdateState.NOTIFICATION_POSTED
     }
 
     private fun showUpdateNotification(context: Context, updateInfo: AppUpdateInfo) {

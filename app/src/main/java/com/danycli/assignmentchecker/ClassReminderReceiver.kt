@@ -38,28 +38,34 @@ class ClassReminderReceiver : BroadcastReceiver() {
             return
         }
 
-        // 1. Show notification
-        val label = courseCode.ifBlank { courseName }
-        val title = "Class Reminder: $label"
-        val details = mutableListOf<String>()
-        if (courseName.isNotBlank()) details.add(courseName)
-        details.add("starts in 5 mins")
-        if (room.isNotBlank()) details.add("Room $room")
-        if (instructor.isNotBlank()) details.add("Instructor: $instructor")
-
-        val content = details.joinToString(" • ")
-
-        val notification = TimetableNotificationBuilder.buildReminder(
-            context = context,
-            title = title,
-            content = content
-        )
-
-        try {
-            NotificationManagerCompat.from(context)
-                .notify(label.hashCode(), notification)
-        } catch (e: SecurityException) {
-            Log.e("ClassReminderReceiver", "Notification permission missing", e)
+        // Defensive check: Do not show if today is an Exam Entry Coupon date
+        val todayStr = java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE)
+        if (ExamCouponManager.isExamCouponDate(context, todayStr)) {
+            Log.d("ClassReminderReceiver", "Skipping notification display for $courseCode due to Exam Entry Coupon date")
+        } else {
+            // 1. Show notification
+            val label = courseCode.ifBlank { courseName }
+            val title = "Class Reminder: $label"
+            val details = mutableListOf<String>()
+            if (courseName.isNotBlank()) details.add(courseName)
+            details.add("starts in 5 mins")
+            if (room.isNotBlank()) details.add("Room $room")
+            if (instructor.isNotBlank()) details.add("Instructor: $instructor")
+    
+            val content = details.joinToString(" • ")
+    
+            val notification = TimetableNotificationBuilder.buildReminder(
+                context = context,
+                title = title,
+                content = content
+            )
+    
+            try {
+                NotificationManagerCompat.from(context)
+                    .notify(label.hashCode(), notification)
+            } catch (e: SecurityException) {
+                Log.e("ClassReminderReceiver", "Notification permission missing", e)
+            }
         }
 
         // 2. Reschedule for next week (7 days later)

@@ -127,4 +127,32 @@ open class MainViewModel : ViewModel() {
             }
         }
     }
+
+    open suspend fun checkForegroundUpdate(context: Context): AppUpdateInfo? = withContext(Dispatchers.IO) {
+        val settings = AppSettingsStore.get(context)
+        if (!settings.updateNotificationsEnabled) return@withContext null
+
+        val prefs = context.getSharedPreferences("update_notification_prefs", Context.MODE_PRIVATE)
+        val lastForegroundCheck = prefs.getLong("last_foreground_check", 0L)
+        val now = System.currentTimeMillis()
+        
+        // 1 hour cooldown for explicit foreground network checks
+        if (now - lastForegroundCheck < 60 * 60 * 1000L) {
+            // Still check cache just in case background worker found it
+            val cached = fetchAppUpdateInfo(context, force = false)
+            if (cached != null && cached.latestVersionCode > BuildConfig.VERSION_CODE) {
+                return@withContext cached
+            }
+            return@withContext null
+        }
+        
+        prefs.edit().putLong("last_foreground_check", now).apply()
+        
+        // Force check to bypass 24h cache
+        val updateInfo = fetchAppUpdateInfo(context, force = true)
+        if (updateInfo != null && updateInfo.latestVersionCode > BuildConfig.VERSION_CODE) {
+            return@withContext updateInfo
+        }
+        return@withContext null
+    }
 }

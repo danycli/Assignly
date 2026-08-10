@@ -31,7 +31,7 @@ private sealed class FetchResult {
     data class Success(val info: AppUpdateInfo, val etag: String?) : FetchResult()
     object NotModified : FetchResult()
     object RateLimited : FetchResult()
-    object Error : FetchResult()
+    data class Error(val reason: String) : FetchResult()
 }
 
 private fun extractReleaseVersionCode(value: String?): Int? {
@@ -103,10 +103,10 @@ private fun fetchFromUrl(
 ): FetchResult {
     var connection: HttpURLConnection? = null
     return try {
-        connection = (URL(urlStr).openConnection() as? HttpURLConnection) ?: return FetchResult.Error
+        connection = (URL(urlStr).openConnection() as? HttpURLConnection) ?: return FetchResult.Error("Invalid URL")
         connection.requestMethod = "GET"
-        connection.connectTimeout = 7_000
-        connection.readTimeout = 7_000
+        connection.connectTimeout = 5_000
+        connection.readTimeout = 5_000
         connection.instanceFollowRedirects = true
         if (acceptHeader != null) {
             connection.setRequestProperty("Accept", acceptHeader)
@@ -129,7 +129,7 @@ private fun fetchFromUrl(
 
         if (responseCode !in 200..299) {
             runCatching { Log.w("AppUpdateChecker", "Fetch from $urlStr failed: HTTP $responseCode") }
-            return FetchResult.Error
+            return FetchResult.Error("HTTP $responseCode")
         }
 
         val etag = connection.getHeaderField("ETag")
@@ -138,11 +138,11 @@ private fun fetchFromUrl(
         if (info != null) {
             FetchResult.Success(info, etag)
         } else {
-            FetchResult.Error
+            FetchResult.Error("Parse failed")
         }
     } catch (e: Exception) {
         runCatching { Log.e("AppUpdateChecker", "Fetch from $urlStr failed: ${e.message}") }
-        FetchResult.Error
+        FetchResult.Error(e.message ?: "Unknown error")
     } finally {
         connection?.disconnect()
     }
@@ -183,9 +183,13 @@ private fun performNetworkCheck(cachedEtag: String?): FetchResult {
     runCatching { Log.w("AppUpdateChecker", "Vercel fallback failed. Trying Raw GitHub static fallback...") }
 
     // 4. Try Raw GitHub static JSON
-    return fetchFromUrl("https://raw.githubusercontent.com/danycli/Assignly/main/latest_version.json") { body ->
+    val rawResult = fetchFromUrl("https://raw.githubusercontent.com/danycli/Assignly/main/latest_version.json") { body ->
         parseStaticJsonInfo(body)
     }
+    if (rawResult is FetchResult.Success) return rawResult
+    
+    runCatching { Log.e("AppUpdateChecker", "UpdateCheckFailed: All update sources failed") }
+    return rawResult
 }
 
 fun fetchAppUpdateInfo(context: Context, force: Boolean = false): AppUpdateInfo? {

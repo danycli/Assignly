@@ -24,3 +24,12 @@ enum class PendingStatusFilter {
 enum class UpdateCheckResult {
     UPDATE_AVAILABLE, UP_TO_DATE, ERROR
 }
+
+enum class UpdateState {
+    NO_UPDATE,
+    UPDATE_AVAILABLE,
+    ALREADY_NOTIFIED,
+    NOTIFICATION_POSTED,
+    NOTIFICATION_UNAVAILABLE,
+    UPDATE_CHECK_FAILED
+}
