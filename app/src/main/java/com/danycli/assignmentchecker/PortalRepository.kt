@@ -83,6 +83,56 @@ class PortalRepository {
     }
 
     private val portalDeadlineFormatter = DateTimeFormatter.ofPattern("MMM dd ,yyyy HH:mm", Locale.US)
+    
+    var credentialsProvider: (() -> Pair<String, String>?)? = null
+    var persistCookiesCallback: (() -> Unit)? = null
+    private val authLock = java.util.concurrent.locks.ReentrantLock()
+    private var lastSilentAuthEpochMs = 0L
+
+    private fun <T> executeAuthenticatedRequest(block: () -> T): T {
+        return try {
+            block()
+        } catch (e: Exception) {
+            val isSessionExpired = e is PortalSystemException && (
+                e.message?.contains("Session expired", ignoreCase = true) == true
+                || e.message?.contains("redirected to login page", ignoreCase = true) == true
+                || e.message?.contains("Not authenticated", ignoreCase = true) == true
+            )
+            
+            if (isSessionExpired) {
+                val creds = credentialsProvider?.invoke() ?: throw e
+                
+                var locked = false
+                try {
+                    locked = authLock.tryLock(45, java.util.concurrent.TimeUnit.SECONDS)
+                    if (locked) {
+                        if (System.currentTimeMillis() - lastSilentAuthEpochMs < 15000) {
+                            debugLog("executeAuthenticatedRequest: Another thread recently re-authenticated. Skipping silent login.")
+                        } else {
+                            debugLog("executeAuthenticatedRequest: Session expired. Performing silent login.")
+                            val result = login(creds.first, creds.second)
+                            if (result is LoginResult.Success) {
+                                lastSilentAuthEpochMs = System.currentTimeMillis()
+                                persistCookiesCallback?.invoke()
+                                debugLog("executeAuthenticatedRequest: Silent login successful.")
+                            } else {
+                                throw PortalSystemException("Silent authentication failed: ${(result as? LoginResult.Error)?.message ?: "Verification needed"}")
+                            }
+                        }
+                    } else {
+                        throw PortalSystemException("Silent authentication timed out waiting for lock.")
+                    }
+                } finally {
+                    if (locked) authLock.unlock()
+                }
+                
+                debugLog("executeAuthenticatedRequest: Retrying original request exactly once.")
+                block()
+            } else {
+                throw e
+            }
+        }
+    }
     private val portalDeadlineZoneId = ZoneId.systemDefault()
     private val coursePostbackTargets = mutableMapOf<String, String>()
     private val courseTitleToCodeMap = mutableMapOf<String, String>()
@@ -316,7 +366,11 @@ class PortalRepository {
         currentStudentPhotoUrl = normalized
     }
 
-    fun fetchCurrentStudentPhoto(): ByteArray? {
+    fun fetchCurrentStudentPhoto(): ByteArray? = executeAuthenticatedRequest {
+        execute_fetchCurrentStudentPhoto()
+    }
+
+    private fun execute_fetchCurrentStudentPhoto(): ByteArray? {
         val photoUrl = currentStudentPhotoUrl ?: return null
         val cachedBytes = currentStudentPhotoBytes
         if (cachedBytes != null && currentStudentPhotoBytesUrl == photoUrl) {
@@ -856,6 +910,31 @@ class PortalRepository {
         return cookies.map { "${it.name}=${it.value}" }
     }
 
+    fun saveCookiesToPrefs(context: android.content.Context) {
+        val prefs = context.getSharedPreferences("SessionCookies", android.content.Context.MODE_PRIVATE)
+        val hostCookies = cookieStore[baseHost]?.values
+        if (hostCookies.isNullOrEmpty()) {
+            prefs.edit().remove("saved_cookies").apply()
+            return
+        }
+        val rawHeader = hostCookies.joinToString(";") { "${it.name}=${it.value}" }
+        prefs.edit().putString("saved_cookies", rawHeader).apply()
+    }
+
+    fun loadCookiesFromPrefs(context: android.content.Context) {
+        val prefs = context.getSharedPreferences("SessionCookies", android.content.Context.MODE_PRIVATE)
+        val rawHeader = prefs.getString("saved_cookies", null)
+        if (!rawHeader.isNullOrBlank()) {
+            injectCookiesFromWebView(rawHeader, baseUrl)
+        }
+    }
+
+    fun clearCookiesFromPrefs(context: android.content.Context) {
+        val prefs = context.getSharedPreferences("SessionCookies", android.content.Context.MODE_PRIVATE)
+        prefs.edit().remove("saved_cookies").apply()
+        cookieStore.clear()
+    }
+
     private val cookieStore = HashMap<String, MutableMap<String, Cookie>>()
     private val client = OkHttpClient.Builder()
         .cookieJar(object : CookieJar {
@@ -1102,7 +1181,15 @@ class PortalRepository {
                 LoginResult.Success
             } else {
                 clearSessionState()
-                LoginResult.InvalidCredentials
+                
+                val finalShowsLogin = isLoginPage(finalUrl, finalHtml)
+                if (finalShowsLogin) {
+                    LoginResult.InvalidCredentials
+                } else if (verifyShowsLogin) {
+                    LoginResult.Error("Portal session dropped immediately after authentication.")
+                } else {
+                    LoginResult.Error("Portal returned unexpected state. Authentication could not be verified.")
+                }
             }
         } catch (e: PortalSystemException) {
             clearSessionState()
@@ -1118,7 +1205,11 @@ class PortalRepository {
         }
     }
 
-    fun fetchAssignments(): Pair<List<Assignment>, List<Assignment>> {
+    fun fetchAssignments(): Pair<List<Assignment>, List<Assignment>> = executeAuthenticatedRequest {
+        execute_fetchAssignments()
+    }
+
+    private fun execute_fetchAssignments(): Pair<List<Assignment>, List<Assignment>> {
         return try {
             val assignmentsUrl = "$baseUrl/CoursePortal.aspx"
             Log.d("PortalAuth", "Fetching assignments from: $assignmentsUrl")
@@ -1436,7 +1527,11 @@ class PortalRepository {
         return attendanceInsights
     }
 
-    fun fetchLowestAttendanceInsight(): AttendanceInsight? {
+    fun fetchLowestAttendanceInsight(): AttendanceInsight? = executeAuthenticatedRequest {
+        execute_fetchLowestAttendanceInsight()
+    }
+
+    private fun execute_fetchLowestAttendanceInsight(): AttendanceInsight? {
         return try {
             val summaryUrl = "$baseUrl/Summary.aspx"
             val request = Request.Builder()
@@ -1469,7 +1564,11 @@ class PortalRepository {
         }
     }
 
-    fun fetchHistoricalAssignments(): List<Assignment> {
+    fun fetchHistoricalAssignments(): List<Assignment> = executeAuthenticatedRequest {
+        execute_fetchHistoricalAssignments()
+    }
+
+    private fun execute_fetchHistoricalAssignments(): List<Assignment> {
         return try {
             val assignmentsUrl = "$baseUrl/CoursePortal.aspx"
             Log.d("PortalAuth", "Fetching historical...")
@@ -1564,7 +1663,11 @@ class PortalRepository {
         }
     }
 
-    fun uploadAssignment(submitPageUrl: String, file: File): UploadResult {
+    fun uploadAssignment(submitPageUrl: String, file: File): UploadResult = executeAuthenticatedRequest {
+        execute_uploadAssignment(submitPageUrl, file)
+    }
+
+    private fun execute_uploadAssignment(submitPageUrl: String, file: File): UploadResult {
         return try {
             Log.d("PortalAuth", "=== UPLOAD START ===")
             Log.d("PortalAuth", "Submit URL: $submitPageUrl")
@@ -2375,14 +2478,14 @@ class PortalRepository {
             val finalUrl = response.request.url.toString()
 
             if (finalUrl.contains("Login.aspx", true)) {
-                return DownloadResult.Rejected("Session expired. Please sign in again.")
+                throw PortalSystemException("Session expired")
             }
 
             val isHtmlLike = (mimeType?.contains("text/html", true) == true || looksLikeHtmlPayload(bytes)) && !hasAttachmentHeader
             if (isHtmlLike) {
                 val html = bytes.toString(Charsets.UTF_8)
                 if (isLoginPage(finalUrl, html)) {
-                    return DownloadResult.Rejected("Session expired. Please sign in again.")
+                    throw PortalSystemException("Session expired")
                 }
 
                 val redirectUrl = extractRedirectUrlFromHtml(html)
@@ -2447,7 +2550,7 @@ class PortalRepository {
         val html = payload.second
         val notAuthenticated = isLoginPage(finalUrl, html) || !hasSessionCookiesForHost(baseHost)
         if (notAuthenticated) {
-            return DownloadResult.Rejected("Session expired. Please sign in again.")
+            throw PortalSystemException("Session expired")
         }
 
         val doc = Jsoup.parse(html)
@@ -2504,7 +2607,7 @@ class PortalRepository {
         val html = payload.second
         val notAuthenticated = isLoginPage(finalUrl, html) || !hasSessionCookiesForHost(baseHost)
         if (notAuthenticated) {
-            return DownloadResult.Rejected("Session expired. Please sign in again.")
+            throw PortalSystemException("Session expired")
         }
 
         val postRequest = buildPostBackRequestFromPage(finalUrl, html, postBackLink.info)
@@ -2533,7 +2636,7 @@ class PortalRepository {
         val html = payload.second
         val notAuthenticated = isLoginPage(finalUrl, html) || !hasSessionCookiesForHost(baseHost)
         if (notAuthenticated) {
-            return UploadResult.Rejected("Session expired. Please sign in again.")
+            throw PortalSystemException("Session expired. Please sign in again.")
         }
 
         val postRequest = buildPostBackRequestFromPage(finalUrl, html, postBackLink.info)
@@ -2558,7 +2661,11 @@ class PortalRepository {
         return uploadWithForm(uploadForm, file, uploadPageHtml)
     }
 
-    fun fetchInstructionFiles(downloadUrl: String): InstructionFilesResult {
+    fun fetchInstructionFiles(downloadUrl: String): InstructionFilesResult = executeAuthenticatedRequest {
+        execute_fetchInstructionFiles(downloadUrl)
+    }
+
+    private fun execute_fetchInstructionFiles(downloadUrl: String): InstructionFilesResult {
         return try {
             if (downloadUrl.isBlank()) {
                 return InstructionFilesResult.Rejected("Download link is unavailable.")
@@ -2595,7 +2702,7 @@ class PortalRepository {
             val finalUrl = payload.first
             val html = payload.second
             if (isLoginPage(finalUrl, html) || !hasSessionCookiesForHost(baseHost)) {
-                return InstructionFilesResult.Rejected("Session expired. Please sign in again.")
+                throw PortalSystemException("Session expired")
             }
 
             val files = parseInstructionFilesFromHtml(html, finalUrl)
@@ -2611,7 +2718,11 @@ class PortalRepository {
         }
     }
 
-    fun downloadAssignment(downloadUrl: String): DownloadResult {
+    fun downloadAssignment(downloadUrl: String): DownloadResult = executeAuthenticatedRequest {
+        execute_downloadAssignment(downloadUrl)
+    }
+
+    private fun execute_downloadAssignment(downloadUrl: String): DownloadResult {
         return try {
             if (downloadUrl.isBlank()) {
                 return DownloadResult.Rejected("Download link is unavailable.")
@@ -2645,7 +2756,11 @@ class PortalRepository {
         }
     }
 
-    fun fetchTimetable(): List<TimetableLecture> {
+    fun fetchTimetable(): List<TimetableLecture> = executeAuthenticatedRequest {
+        execute_fetchTimetable()
+    }
+
+    private fun execute_fetchTimetable(): List<TimetableLecture> {
         return try {
             val timetableUrl = "$baseUrl/Timetable.aspx"
             Log.d("PortalAuth", "Fetching timetable from: $timetableUrl")
@@ -3107,7 +3222,11 @@ class PortalRepository {
         }
     }
 
-    fun fetchAttendanceSummary(resolvedCodes: Map<String, String>? = null): List<AttendanceSummary> {
+    fun fetchAttendanceSummary(resolvedCodes: Map<String, String>? = null): List<AttendanceSummary> = executeAuthenticatedRequest {
+        execute_fetchAttendanceSummary(resolvedCodes)
+    }
+
+    private fun execute_fetchAttendanceSummary(resolvedCodes: Map<String, String>? = null): List<AttendanceSummary> {
         if (resolvedCodes != null) {
             courseTitleToCodeMap.putAll(resolvedCodes)
         }
@@ -3287,7 +3406,11 @@ class PortalRepository {
         }
     }
 
-    fun fetchAttendanceDetail(courseCode: String): List<AttendanceDetail> {
+    fun fetchAttendanceDetail(courseCode: String): List<AttendanceDetail> = executeAuthenticatedRequest {
+        execute_fetchAttendanceDetail(courseCode)
+    }
+
+    private fun execute_fetchAttendanceDetail(courseCode: String): List<AttendanceDetail> {
         val cleanCode = courseCode.trim().uppercase()
         var postbackTarget = coursePostbackTargets[cleanCode]
         
@@ -3400,7 +3523,11 @@ class PortalRepository {
         }
     }
 
-    fun fetchGrades(): GpaSummary {
+    fun fetchGrades(): GpaSummary = executeAuthenticatedRequest {
+        execute_fetchGrades()
+    }
+
+    private fun execute_fetchGrades(): GpaSummary {
         return try {
             val url = "$baseUrl/StudentResultCard.aspx"
             val request = Request.Builder()
@@ -3665,7 +3792,11 @@ class PortalRepository {
         }
     }
 
-    fun fetchMarks(courseCode: String): List<MarksCategory> {
+    fun fetchMarks(courseCode: String): List<MarksCategory> = executeAuthenticatedRequest {
+        execute_fetchMarks(courseCode)
+    }
+
+    private fun execute_fetchMarks(courseCode: String): List<MarksCategory> {
         val cleanCode = courseCode.trim().uppercase()
         var postbackTarget = coursePostbackTargets[cleanCode]
         
@@ -3869,7 +4000,11 @@ class PortalRepository {
         }
     }
 
-    fun fetchStudentProfile(): StudentProfile {
+    fun fetchStudentProfile(): StudentProfile = executeAuthenticatedRequest {
+        execute_fetchStudentProfile()
+    }
+
+    private fun execute_fetchStudentProfile(): StudentProfile {
         return try {
             val url = "$baseUrl/Dashboard.aspx"
             val request = Request.Builder()
@@ -4113,7 +4248,11 @@ class PortalRepository {
         return Pair(email, phone)
     }
 
-    fun fetchFeeDetails(): FeeSnapshot {
+    fun fetchFeeDetails(): FeeSnapshot = executeAuthenticatedRequest {
+        execute_fetchFeeDetails()
+    }
+
+    private fun execute_fetchFeeDetails(): FeeSnapshot {
         return try {
             // 1. Fetch Challans
             val challansUrl = "$baseUrl/FeeChallans.aspx"
@@ -4521,7 +4660,11 @@ class PortalRepository {
         return Triple(year, monthPriority, typePriority)
     }
 
-    fun fetchEnrolledCourses(): EnrolledCoursesData {
+    fun fetchEnrolledCourses(): EnrolledCoursesData = executeAuthenticatedRequest {
+        execute_fetchEnrolledCourses()
+    }
+
+    private fun execute_fetchEnrolledCourses(): EnrolledCoursesData {
         runCatching { populateCourseCodesMap() }
         return try {
             val url = "$baseUrl/EnrolledCourses.aspx"
@@ -4795,7 +4938,11 @@ class PortalRepository {
         )
     }
 
-    fun fetchCourseFiles(courseCode: String, courseTitle: String): List<CourseFile> {
+    fun fetchCourseFiles(courseCode: String, courseTitle: String): List<CourseFile> = executeAuthenticatedRequest {
+        execute_fetchCourseFiles(courseCode, courseTitle)
+    }
+
+    private fun execute_fetchCourseFiles(courseCode: String, courseTitle: String): List<CourseFile> {
         val summaryUrl = "$baseUrl/CoursePortalContentsSummary.aspx"
         if (courseTitleToCodeMap.isEmpty() || courseTitleToCreditMap.isEmpty()) {
             populateCourseCodesMap()
@@ -5131,7 +5278,11 @@ class PortalRepository {
         }
     }
 
-    fun fetchExamEntryCouponDates(): Set<String> {
+    fun fetchExamEntryCouponInfo(): ExamCouponInfo = executeAuthenticatedRequest {
+        execute_fetchExamEntryCouponInfo()
+    }
+
+    private fun execute_fetchExamEntryCouponInfo(): ExamCouponInfo {
         val url = "$baseUrl/ExamEntry.aspx"
         val request = Request.Builder()
             .url(url)
@@ -5141,10 +5292,10 @@ class PortalRepository {
         
         val response = client.newCall(request).execute()
         if (!response.isSuccessful) {
-            throw PortalSystemException("fetchExamEntryCouponDates GET ExamEntry.aspx failed HTTP ${response.code}")
+            throw PortalSystemException("fetchExamEntryCouponInfo GET ExamEntry.aspx failed HTTP ${response.code}")
         }
         
-        val html = response.body?.string() ?: throw PortalSystemException("fetchExamEntryCouponDates ExamEntry.aspx empty response")
+        val html = response.body?.string() ?: throw PortalSystemException("fetchExamEntryCouponInfo ExamEntry.aspx empty response")
         
         val doc = Jsoup.parse(html)
         detectPortalSystemErrors(html)
@@ -5158,8 +5309,20 @@ class PortalRepository {
         val formatter2 = DateTimeFormatter.ofPattern("d-MMM-yyyy", Locale.US)
         val formatter3 = DateTimeFormatter.ofPattern("dd/MM/yyyy", Locale.US)
         
+        var examType = ExamType.UNKNOWN
+
         doc.select("table").forEach { table ->
             val text = table.text()
+            
+            if (examType == ExamType.UNKNOWN) {
+                val clean = text.lowercase().replace(Regex("[^a-z0-9]"), "")
+                if (clean.contains("midterm") || clean.contains("mid")) {
+                    examType = ExamType.MIDTERM
+                } else if (clean.contains("final") || clean.contains("finalterm")) {
+                    examType = ExamType.FINAL
+                }
+            }
+
             datePattern.findAll(text).forEach { match ->
                 val dateStr = match.value
                 try {
@@ -5184,6 +5347,6 @@ class PortalRepository {
             }
         }
         
-        return dates
+        return ExamCouponInfo(examType = examType, dates = dates)
     }
 }

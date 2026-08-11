@@ -85,4 +85,12 @@ object TimetableCacheStore {
         }
         return result
     }
+
+    fun generateCourseFingerprint(lectures: List<TimetableLecture>): String {
+        return lectures.map { it.courseCode.ifBlank { it.courseName }.lowercase().trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
+            .joinToString(",")
+    }
 }

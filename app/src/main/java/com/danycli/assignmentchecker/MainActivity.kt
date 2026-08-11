@@ -121,6 +121,10 @@ private fun AppEntry() {
         startupCredentials = withContext(Dispatchers.IO) {
             CredentialsStore.get(context)
         }
+        viewModel.setCredentialsProvider(
+            provider = { CredentialsStore.get(context) },
+            persistCookies = { viewModel.saveCookies(context) }
+        )
         val elapsedMs = System.currentTimeMillis() - splashStart
         val remainingMs = 1_000L - elapsedMs
         if (remainingMs > 0) {
@@ -647,6 +651,7 @@ fun MainScreen(
         currentScreen = ScreenType.PENDING
 
         CredentialsStore.clear(context)
+        viewModel.clearCookies(context)
         AssignmentCacheStore.clear(context)
         ProfileCacheStore.clear(context)
         FeeCacheStore.clear(context)
@@ -679,59 +684,11 @@ fun MainScreen(
         return result
     }
 
-    suspend fun runDownloadWithRetry(downloadLink: String): DownloadResult {
-        var result = viewModel.downloadAssignment(downloadLink)
-        val isSessionExpired = result is DownloadResult.Rejected && (
-            result.reason.contains("Session expired", ignoreCase = true)
-            || result.reason.contains("sign in again", ignoreCase = true)
-            || result.reason.contains("Not authenticated", ignoreCase = true)
-        )
-        if (isSessionExpired) {
-            val savedCreds = withContext(Dispatchers.IO) {
-                CredentialsStore.get(context)
-            }
-            if (savedCreds != null) {
-                val (savedUser, savedPass) = savedCreds
-                val loginResult = attemptPortalLoginSilent(savedUser, savedPass)
-                if (loginResult is LoginResult.Success) {
-                    result = viewModel.downloadAssignment(downloadLink)
-                }
-            }
-        }
-        return result
-    }
 
-    suspend fun <T> runWithAutoRetry(block: suspend () -> T): T {
-        return try {
-            block()
-        } catch (e: Exception) {
-            val isSessionExpired = e is PortalSystemException && (
-                e.message?.contains("Session expired", ignoreCase = true) == true
-                || e.message?.contains("Not authenticated", ignoreCase = true) == true
-            )
-            if (isSessionExpired) {
-                val savedCreds = withContext(Dispatchers.IO) {
-                    CredentialsStore.get(context)
-                }
-                if (savedCreds != null) {
-                    val (savedUser, savedPass) = savedCreds
-                    val loginResult = attemptPortalLoginSilent(savedUser, savedPass)
-                    if (loginResult is LoginResult.Success) {
-                        block()
-                    } else {
-                        throw e
-                    }
-                } else {
-                    throw e
-                }
-            } else {
-                throw e
-            }
-        }
-    }
+
 
     suspend fun syncAttendanceAndDetails(resolvedCodes: Map<String, String>? = null): List<AttendanceSummary> {
-        val fetchedAttendance = runWithAutoRetry { viewModel.loadAttendanceSummary(resolvedCodes) }
+        val fetchedAttendance = viewModel.loadAttendanceSummary(resolvedCodes)
         if (fetchedAttendance.isNotEmpty()) {
             attendanceSummaryList = fetchedAttendance
             
@@ -740,7 +697,7 @@ fun MainScreen(
             for (course in fetchedAttendance) {
                 runCatching {
                     val target = if (course.courseCode.isBlank()) course.courseName else course.courseCode
-                    val details = runWithAutoRetry { viewModel.loadAttendanceDetail(target) }
+                    val details = viewModel.loadAttendanceDetail(target)
                     fetchedDetails.addAll(details)
                 }.onFailure { err ->
                     Log.e("MainActivity", "Failed to pre-fetch attendance detail for ${course.courseName}: ${err.message}", err)
@@ -779,7 +736,7 @@ fun MainScreen(
             val cachedCourse = currentMarksMap[cleanCode]
 
             runCatching {
-                val categories = runWithAutoRetry { viewModel.loadMarks(code) }
+                val categories = viewModel.loadMarks(code)
                 val name = courseNamesMap[code] ?: ""
                 if (categories.isEmpty() && cachedCourse != null && cachedCourse.categories.isNotEmpty()) {
                     Log.w("MainActivity", "Fetched empty marks categories for $code, but cache has data. Retaining cached marks.")
@@ -817,23 +774,9 @@ fun MainScreen(
     suspend fun refreshAssignmentsState() = coroutineScope {
         val previousSnapshot = AssignmentCacheStore.loadSnapshot(context)
 
-        // Trigger concurrent parallel fetches for all independent dashboard sections
-        val dashboardDeferred = async { runWithAutoRetry { viewModel.loadDashboardData() } }
-        val profileDeferred = async { runCatching { runWithAutoRetry { viewModel.loadProfile() } }.getOrNull() }
-        val photoDeferred = async { runCatching { runWithAutoRetry { viewModel.loadPhotoBytes() } }.getOrNull() }
-        val timetableDeferred = async { runCatching { runWithAutoRetry { viewModel.loadTimetable() } }.getOrNull() }
-        val gradesDeferred = async { runCatching { runWithAutoRetry { viewModel.loadGrades() } }.getOrNull() }
-        val feeDeferred = async { runCatching { runWithAutoRetry { viewModel.loadFeeDetails() } }.getOrNull() }
-        val enrolledDeferred = async { runCatching { runWithAutoRetry { viewModel.loadEnrolledCourses() } }.getOrNull() }
-
-        // Await background execution outcomes
-        val dashboardData = dashboardDeferred.await()
-        val fetchedProfile = profileDeferred.await()
-        val fetchedPhoto = photoDeferred.await()
-        val fetchedTimetable = timetableDeferred.await()
-        val fetchedGrades = gradesDeferred.await()
-        val fetchedFee = feeDeferred.await()
-        val fetchedEnrolled = enrolledDeferred.await()
+        // 1. Fetch dashboard data FIRST and sequentially to ensure quick UI response
+        //    and prevent ASP.NET session locking/timeout errors from parallel requests.
+        val dashboardData = runCatching { viewModel.loadDashboardData() }.getOrNull()
 
         if (dashboardData != null && (dashboardData.pendingAssignments.isNotEmpty() || dashboardData.historicalAssignments.isNotEmpty())) {
             assignments = dashboardData.pendingAssignments
@@ -857,45 +800,52 @@ fun MainScreen(
             lastSyncedMs = System.currentTimeMillis()
         }
 
+        // 2. Fetch all other auxiliary data sequentially to prevent ASP.NET session state DOS
+        val fetchedProfile = runCatching { viewModel.loadProfile() }.getOrNull()
         if (fetchedProfile != null) {
             studentProfile = fetchedProfile
             ProfileCacheStore.saveSnapshot(context, fetchedProfile)
         }
+
+        val fetchedPhoto = runCatching { viewModel.loadPhotoBytes() }.getOrNull()
         if (fetchedPhoto != null) {
             loggedInStudentPhoto = fetchedPhoto
             ProfileCacheStore.savePhoto(context, fetchedPhoto)
         }
 
         timetableError = null
+        val fetchedTimetable = runCatching { viewModel.loadTimetable() }.getOrNull()
         if (fetchedTimetable != null && fetchedTimetable.isNotEmpty()) {
             timetableLectures = fetchedTimetable
             TimetableCacheStore.saveSnapshot(context, fetchedTimetable)
             TimetableNotificationManager.scheduleClassReminders(context)
         }
 
+        val fetchedGrades = runCatching { viewModel.loadGrades() }.getOrNull()
         if (fetchedGrades != null && fetchedGrades.semesters.isNotEmpty()) {
             gpaSummary = fetchedGrades
             GradesCacheStore.saveSnapshot(context, fetchedGrades)
         }
 
+        val fetchedFee = runCatching { viewModel.loadFeeDetails() }.getOrNull()
         if (fetchedFee != null) {
             feeSnapshot = fetchedFee
             FeeCacheStore.saveSnapshot(context, fetchedFee)
         }
 
+        val fetchedEnrolled = runCatching { viewModel.loadEnrolledCourses() }.getOrNull()
         if (fetchedEnrolled != null) {
             enrolledCourses = fetchedEnrolled.courses
             enrolledCoursesSemester = fetchedEnrolled.semesterName
             EnrolledCoursesCacheStore.saveSnapshot(context, fetchedEnrolled)
             
-            fetchedEnrolled.courses.forEach { course ->
-                launch {
-                    try {
-                        val files = viewModel.loadCourseFiles(course.courseCode, course.courseTitle)
-                        CourseFilesCacheStore.saveSnapshot(context, course.courseCode, files)
-                    } catch (e: Exception) {
-                        Log.e("MainActivity", "Failed to sync course files for ${course.courseCode} on startup", e)
-                    }
+            // Sync course files sequentially as well
+            for (course in fetchedEnrolled.courses) {
+                try {
+                    val files = viewModel.loadCourseFiles(course.courseCode, course.courseTitle)
+                    CourseFilesCacheStore.saveSnapshot(context, course.courseCode, files)
+                } catch (e: Exception) {
+                    Log.e("MainActivity", "Failed to sync course files for ${course.courseCode} on startup", e)
                 }
             }
         }
@@ -1050,7 +1000,7 @@ fun MainScreen(
 
     suspend fun refreshAssignmentsOnly() = coroutineScope {
         val previousSnapshot = AssignmentCacheStore.loadSnapshot(context)
-        val dashboardData = runWithAutoRetry { viewModel.loadDashboardData() }
+        val dashboardData = viewModel.loadDashboardData()
 
         if (dashboardData.pendingAssignments.isNotEmpty() || dashboardData.historicalAssignments.isNotEmpty()) {
             assignments = dashboardData.pendingAssignments
@@ -1158,12 +1108,16 @@ fun MainScreen(
         when (result) {
             is LoginResult.Success -> {
                 pendingCaptchaCredentials = null
-                showCaptchaDialog = false
                 isLoggedIn = true
+                showCaptchaDialog = false
+
                 if (saveCredentialsOnSuccess) {
                     CredentialsStore.save(context, normalizedUser, passwordInput)
                 }
                 
+                // Save the session cookies so they survive app restarts
+                viewModel.saveCookies(context)
+
                 val settings = AppSettingsStore.get(context)
                 if (settings.rememberRegistrationNumber) {
                     RegistrationHistoryStore.saveRegistration(context, normalizedUser)
@@ -1196,10 +1150,9 @@ fun MainScreen(
             is LoginResult.InvalidCredentials -> {
                 pendingCaptchaCredentials = null
                 showCaptchaDialog = false
-                if (isAutoLogin) {
-                    clearAllUserSessionData()
+                if (!isAutoLogin) {
+                    showAppMessage("Authentication failed. Check your ID/password.")
                 }
-                showAppMessage("Authentication failed. Check your ID/password.")
             }
             is LoginResult.CaptchaRequired -> {
                 pendingCaptchaCredentials = normalizedUser to passwordInput
@@ -1226,8 +1179,6 @@ fun MainScreen(
                     } else {
                         showAppMessage(mapLoginErrorToMessage(result.message))
                     }
-                } else {
-                    showAppMessage("Offline mode. Showing cached data.")
                 }
             }
         }
@@ -1771,7 +1722,7 @@ fun MainScreen(
                             },
                             onLoadDetail = { courseCode ->
                                 try {
-                                    runWithAutoRetry { viewModel.loadAttendanceDetail(courseCode) }.also { details ->
+                                    viewModel.loadAttendanceDetail(courseCode).also { details ->
                                         if (details.isNotEmpty()) {
                                             val currentCached = AttendanceCacheStore.loadSnapshot(context)
                                             val currentSummary = currentCached?.summary ?: attendanceSummaryList
@@ -1810,7 +1761,7 @@ fun MainScreen(
                                 isGradesRefreshing = true
                                 scope.launch {
                                     runCatching {
-                                        val fetched = runWithAutoRetry { viewModel.loadGrades() }
+                                        val fetched = viewModel.loadGrades()
                                         if (fetched.semesters.isNotEmpty()) {
                                             gpaSummary = fetched
                                             GradesCacheStore.saveSnapshot(context, fetched)
@@ -1840,7 +1791,7 @@ fun MainScreen(
                             isRefreshing = isMarksRefreshing,
                             onRefreshCourse = { courseCode ->
                                 try {
-                                    runWithAutoRetry { viewModel.loadMarks(courseCode) }.also { categories ->
+                                    viewModel.loadMarks(courseCode).also { categories ->
                                         if (categories.isNotEmpty()) {
                                             val updatedMap = courseMarksMap + (courseCode to categories)
                                             courseMarksMap = updatedMap
@@ -1890,8 +1841,8 @@ fun MainScreen(
                             onRefreshProfile = {
                                 isProfileRefreshing = true
                                 val result = try {
-                                    val prof = runWithAutoRetry { viewModel.loadProfile() }
-                                    val photo = runWithAutoRetry { viewModel.loadPhotoBytes() }
+                                    val prof = viewModel.loadProfile()
+                                    val photo = viewModel.loadPhotoBytes()
                                     studentProfile = prof
                                     ProfileCacheStore.saveSnapshot(context, prof)
                                     if (photo != null) {
@@ -1919,7 +1870,7 @@ fun MainScreen(
                             onRefreshFee = {
                                 isFeeRefreshing = true
                                 val result = try {
-                                    val snapshot = runWithAutoRetry { viewModel.loadFeeDetails() }
+                                    val snapshot = viewModel.loadFeeDetails()
                                     feeSnapshot = snapshot
                                     FeeCacheStore.saveSnapshot(context, snapshot)
                                     snapshot
@@ -1934,7 +1885,7 @@ fun MainScreen(
                             onDownloadChallan = { challan ->
                                 scope.launch {
                                     try {
-                                        runWithAutoRetry { viewModel.ensureSessionValid() }
+                                        viewModel.ensureSessionValid()
                                         if (challan.downloadLink.contains(".aspx", ignoreCase = true)) {
                                             feePrintChallan = challan
                                         } else {
@@ -1981,7 +1932,7 @@ fun MainScreen(
                                                     
                                                     val downloadResult = try {
                                                         withTimeout(45_000) {
-                                                            runDownloadWithRetry(file.downloadLink)
+                                                            viewModel.downloadAssignment(file.downloadLink)
                                                         }
                                                     } catch (e: TimeoutCancellationException) {
                                                         Log.e("MainActivity", "Failed to download during batch: ${file.title}", e)
@@ -2072,7 +2023,7 @@ fun MainScreen(
                                             }
                                         }
                                         try {
-                                            val data = runWithAutoRetry { viewModel.loadEnrolledCourses() }
+                                            val data = viewModel.loadEnrolledCourses()
                                             enrolledCourses = data.courses
                                             enrolledCoursesSemester = data.semesterName
                                             EnrolledCoursesCacheStore.saveSnapshot(context, data)

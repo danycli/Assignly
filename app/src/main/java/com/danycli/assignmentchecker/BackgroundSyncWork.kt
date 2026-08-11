@@ -73,6 +73,7 @@ class AssignmentSyncWorker(
 
         val (username, password) = credentials
         val repository = PortalRepository()
+        repository.credentialsProvider = { credentials }
 
         return try {
             when (repository.login(username, password)) {
@@ -118,9 +119,17 @@ class AssignmentSyncWorker(
 
                     // Fetch and sync Exam Entry Coupon dates
                     runCatching {
-                        val couponDates = repository.fetchExamEntryCouponDates()
-                        ExamCouponCacheStore.saveSnapshot(applicationContext, couponDates)
-                        Log.d("AssignmentSyncWorker", "Exam coupon data synchronized. Dates updated: ${couponDates.size}")
+                        val couponInfo = repository.fetchExamEntryCouponInfo()
+                        val currentFingerprint = TimetableCacheStore.loadSnapshot(applicationContext)?.lectures?.let {
+                            TimetableCacheStore.generateCourseFingerprint(it)
+                        } ?: ""
+                        ExamCouponCacheStore.saveSnapshot(
+                            context = applicationContext,
+                            examType = couponInfo.examType,
+                            dates = couponInfo.dates,
+                            courseSnapshot = currentFingerprint
+                        )
+                        Log.d("AssignmentSyncWorker", "Exam coupon data synchronized. Type: ${couponInfo.examType}, Dates: ${couponInfo.dates.size}")
                     }.onFailure { err ->
                         Log.e("AssignmentSyncWorker", "Failed to background-fetch exam coupon dates: ${err.message}")
                     }

@@ -38,10 +38,10 @@ class ClassReminderReceiver : BroadcastReceiver() {
             return
         }
 
-        // Defensive check: Do not show if today is an Exam Entry Coupon date
+        // Defensive check: Do not show if today is an Exam Entry Coupon date or a persistent FINAL state
         val todayStr = java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE)
-        if (ExamCouponManager.isExamCouponDate(context, todayStr)) {
-            Log.d("ClassReminderReceiver", "Skipping notification display for $courseCode due to Exam Entry Coupon date")
+        if (ExamCouponManager.shouldSuppressClassReminders(context, todayStr)) {
+            Log.d("ClassReminderReceiver", "Skipping notification display for $courseCode due to Exam Entry Coupon date / Exam State")
         } else {
             // 1. Show notification
             val label = courseCode.ifBlank { courseName }
@@ -70,12 +70,14 @@ class ClassReminderReceiver : BroadcastReceiver() {
 
         // 2. Reschedule for next week (7 days later)
         // Pass skipCurrentWindow=true to ensure we move to the next occurrence
-        val nextTriggerAt = TimetableNotificationManager.calculateNextClassTriggerEpochMs(day, startTime, skipCurrentWindow = true)
+        val nextTriggerAt = TimetableNotificationManager.calculateNextValidClassTriggerEpochMs(context, day, startTime, skipCurrentWindow = true)
         if (nextTriggerAt != null) {
             val nextIntent = Intent(context, ClassReminderReceiver::class.java).apply {
                 putExtras(intent)
             }
             TimetableNotificationManager.scheduleAlarm(context, nextTriggerAt, requestCode, nextIntent)
+        } else {
+            Log.d("ClassReminderReceiver", "Alarm permanently dropped for $courseCode due to final exam state lock")
         }
     }
 

@@ -53,17 +53,7 @@ object TimetableNotificationManager {
         val newNames = mutableSetOf<String>()
 
         snapshot.lectures.forEach { lecture ->
-            val triggerAt = calculateNextClassTriggerEpochMs(lecture.day, lecture.startTime) ?: return@forEach
-            
-            val localDateStr = java.time.Instant.ofEpochMilli(triggerAt)
-                .atZone(ZoneId.systemDefault())
-                .toLocalDate()
-                .format(DateTimeFormatter.ISO_LOCAL_DATE)
-
-            if (ExamCouponManager.isExamCouponDate(context, localDateStr)) {
-                Log.d("TimetableNotifications", "Skipping alarm for $localDateStr due to Exam Entry Coupon date")
-                return@forEach
-            }
+            val triggerAt = calculateNextValidClassTriggerEpochMs(context, lecture.day, lecture.startTime) ?: return@forEach
 
             if (triggerAt <= now - 60_000) { // If it was supposed to trigger more than 1 min ago, skip
                 return@forEach
@@ -178,11 +168,36 @@ object TimetableNotificationManager {
                     triggerTime = targetDateTime.minusMinutes(5)
                 }
             }
-            triggerTime.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+            return triggerTime.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
         } catch (e: Exception) {
-            Log.e("TimetableNotificationManager", "Failed to parse day='$dayOfWeekStr' time='$startTimeStr'", e)
-            null
+            Log.e("TimetableNotificationManager", "Failed to calculate next class trigger", e)
+            return null
         }
+    }
+
+    fun calculateNextValidClassTriggerEpochMs(
+        context: Context,
+        dayOfWeekStr: String, 
+        startTimeStr: String,
+        skipCurrentWindow: Boolean = false
+    ): Long? {
+        var baseTrigger = calculateNextClassTriggerEpochMs(dayOfWeekStr, startTimeStr, skipCurrentWindow) ?: return null
+        var attempts = 0
+        while (attempts < 8) { // Up to 8 weeks max
+            val localDateStr = java.time.Instant.ofEpochMilli(baseTrigger)
+                .atZone(ZoneId.systemDefault())
+                .toLocalDate()
+                .format(DateTimeFormatter.ISO_LOCAL_DATE)
+
+            if (ExamCouponManager.shouldSuppressClassReminders(context, localDateStr)) {
+                Log.d("TimetableNotifications", "Skipping occurrence for $localDateStr due to Exam Entry Coupon date / Exam State")
+                baseTrigger += 7L * 24 * 60 * 60 * 1000 // Jump 7 days forward
+                attempts++
+            } else {
+                return baseTrigger
+            }
+        }
+        return null // Permanently suppressed (e.g. FINAL lockdown)
     }
 }
 

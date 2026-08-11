@@ -43,6 +43,7 @@ class UploadWorker(
 
         val (username, password) = credentials
         val repository = PortalRepository()
+        repository.credentialsProvider = { credentials }
         val file = runCatching { persistUriToTempFile(Uri.parse(fileUri), uploadId) }.getOrNull()
             ?: return failUpload(uploadId, assignmentTitle, "Cannot read selected file.")
 

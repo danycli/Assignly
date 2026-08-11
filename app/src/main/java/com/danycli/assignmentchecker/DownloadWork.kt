@@ -37,6 +37,7 @@ class DownloadWorker(
             ?: return failDownload(downloadId, fileName, "Missing saved credentials.")
 
         val (username, password) = credentials
+        repository.credentialsProvider = { credentials }
 
         return try {
             when (repository.login(username, password)) {

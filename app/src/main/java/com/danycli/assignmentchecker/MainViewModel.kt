@@ -24,6 +24,11 @@ open class MainViewModel : ViewModel() {
     private val changePasswordUseCase = ChangePasswordUseCase(repository)
     private val fetchPasswordRulesUseCase = FetchPasswordRulesUseCase(repository)
 
+    open fun setCredentialsProvider(provider: () -> Pair<String, String>?, persistCookies: () -> Unit) {
+        repository.credentialsProvider = provider
+        repository.persistCookiesCallback = persistCookies
+    }
+
     open suspend fun loadDashboardData(): DashboardLoadResult = loadDashboardUseCase()
 
     open suspend fun loadHistoricalAndProfile(): Pair<List<Assignment>, ByteArray?> = loadHistoryUseCase()
@@ -93,12 +98,33 @@ open class MainViewModel : ViewModel() {
         portalSessionUseCase.ensureSessionValid()
     }
 
+    open suspend fun hasValidSession(): Boolean = withContext(Dispatchers.IO) {
+        try {
+            ensureSessionValid()
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     open fun setUserAgentForSession(userAgent: String) {
         portalSessionUseCase.setUserAgentForSession(userAgent)
     }
 
     open fun injectCookiesFromWebView(cookieHeader: String?, url: String): Int {
         return portalSessionUseCase.injectCookiesFromWebView(cookieHeader, url)
+    }
+
+    open fun saveCookies(context: Context) {
+        repository.saveCookiesToPrefs(context)
+    }
+
+    open fun loadCookies(context: Context) {
+        repository.loadCookiesFromPrefs(context)
+    }
+
+    open fun clearCookies(context: Context) {
+        repository.clearCookiesFromPrefs(context)
     }
 
     open fun getSessionCookiesList(url: String): List<String> {
