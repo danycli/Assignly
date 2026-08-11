@@ -71,13 +71,12 @@ class AssignmentSyncWorker(
         val credentials = CredentialsStore.get(applicationContext)
             ?: return Result.failure()
 
-        val (username, password) = credentials
         val repository = PortalRepository()
+        repository.loadCookiesFromPrefs(applicationContext)
         repository.credentialsProvider = { credentials }
+        repository.persistCookiesCallback = { repository.saveCookiesToPrefs(applicationContext) }
 
         return try {
-            when (repository.login(username, password)) {
-                is LoginResult.Success -> {
                     val previousSnapshot = AssignmentCacheStore.loadSnapshot(applicationContext)
                     val (pending, historical) = repository.fetchAssignments()
                     if (settings.assignmentNotificationsEnabled) {
@@ -262,13 +261,11 @@ class AssignmentSyncWorker(
                     }
 
                     Result.success()
-                }
-                is LoginResult.InvalidCredentials -> Result.failure()
-                is LoginResult.CaptchaRequired -> Result.failure()
-                is LoginResult.Error -> Result.retry()
-            }
         } catch (io: IOException) {
             Result.retry()
+        } catch (e: com.danycli.assignmentchecker.PortalSystemException) {
+            Log.e("AssignmentSyncWorker", "Periodic sync failed: ${e.message}", e)
+            Result.failure()
         } catch (e: Exception) {
             Log.e("AssignmentSyncWorker", "Periodic sync failed: ${e.message}", e)
             Result.failure()

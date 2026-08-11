@@ -111,12 +111,24 @@ class PortalRepository {
                         } else {
                             debugLog("executeAuthenticatedRequest: Session expired. Performing silent login.")
                             val result = login(creds.first, creds.second)
-                            if (result is LoginResult.Success) {
-                                lastSilentAuthEpochMs = System.currentTimeMillis()
-                                persistCookiesCallback?.invoke()
-                                debugLog("executeAuthenticatedRequest: Silent login successful.")
-                            } else {
-                                throw PortalSystemException("Silent authentication failed: ${(result as? LoginResult.Error)?.message ?: "Verification needed"}")
+                            when (result) {
+                                is LoginResult.Success -> {
+                                    lastSilentAuthEpochMs = System.currentTimeMillis()
+                                    persistCookiesCallback?.invoke()
+                                    debugLog("executeAuthenticatedRequest: Silent login successful.")
+                                }
+                                is LoginResult.CaptchaRequired -> {
+                                    debugLog("Silent login result: CaptchaRequired")
+                                    throw PortalSystemException("AUTHENTICATION_INTERACTION_REQUIRED")
+                                }
+                                is LoginResult.InvalidCredentials -> {
+                                    debugLog("executeAuthenticatedRequest: Silent login rejected invalid credentials.")
+                                    throw PortalSystemException("Invalid credentials")
+                                }
+                                is LoginResult.Error -> {
+                                    debugLog("executeAuthenticatedRequest: Silent login error: ${result.message}")
+                                    throw PortalSystemException(result.message)
+                                }
                             }
                         }
                     } else {
@@ -914,16 +926,23 @@ class PortalRepository {
         val prefs = context.getSharedPreferences("SessionCookies", android.content.Context.MODE_PRIVATE)
         val hostCookies = cookieStore[baseHost]?.values
         if (hostCookies.isNullOrEmpty()) {
-            prefs.edit().remove("saved_cookies").apply()
+            prefs.edit().remove("saved_cookies").remove("saved_user_agent").apply()
             return
         }
         val rawHeader = hostCookies.joinToString(";") { "${it.name}=${it.value}" }
-        prefs.edit().putString("saved_cookies", rawHeader).apply()
+        prefs.edit()
+            .putString("saved_cookies", rawHeader)
+            .putString("saved_user_agent", userAgent)
+            .apply()
     }
 
     fun loadCookiesFromPrefs(context: android.content.Context) {
         val prefs = context.getSharedPreferences("SessionCookies", android.content.Context.MODE_PRIVATE)
         val rawHeader = prefs.getString("saved_cookies", null)
+        val savedUa = prefs.getString("saved_user_agent", null)
+        if (!savedUa.isNullOrBlank()) {
+            userAgent = savedUa
+        }
         if (!rawHeader.isNullOrBlank()) {
             injectCookiesFromWebView(rawHeader, baseUrl)
         }
@@ -998,9 +1017,7 @@ class PortalRepository {
         return try {
             val loginUrl = getPortalLoginUrl()
             val originalUsername = username.trim()
-            fun normalizeToken(value: String): String = value.lowercase().replace(Regex("[^a-z0-9]"), "")
-            val registrationParts = originalUsername.split("-").map { it.trim() }.filter { it.isNotEmpty() }
-            if (registrationParts.size != 3 || password.isBlank()) {
+            if (password.isBlank()) {
                 return LoginResult.InvalidCredentials
             }
             clearSessionState(preserveSecurityCookies = true)
@@ -1039,7 +1056,7 @@ class PortalRepository {
             pauseForLoginPacing(pacing)
 
             if (isSecurityVerificationPage(initialUrl, initialHtml)) {
-                debugLog("CAPTCHA detected")
+                debugLog("Silent login: initial GET security verification detected")
                 return LoginResult.CaptchaRequired
             }
 
@@ -1099,7 +1116,7 @@ class PortalRepository {
             val finalHtml = finalPayload.second
 
             if (isSecurityVerificationPage(finalUrl, finalHtml)) {
-                debugLog("CAPTCHA/security verification detected after login submit")
+                debugLog("Silent login: POST security verification detected")
                 return LoginResult.CaptchaRequired
             }
 
@@ -1109,17 +1126,7 @@ class PortalRepository {
             debugLog("Contains 'CoursePortal': ${finalHtml.contains("CoursePortal", true)}")
             debugLog("Contains 'Login.aspx': ${finalUrl.contains("Login.aspx", true)}")
             
-            // LOG HTML SNIPPET FOR DEBUGGING
-            try {
-                val snippet = finalHtml.take(2000)
-                android.util.Log.e("PortalAuth", "SERVER RETURNED HTML SNIPPET:\n$snippet")
-                
-                val errDoc = org.jsoup.Jsoup.parse(finalHtml)
-                val errMsg = errDoc.select("#lblMsg, #lblError, .alert, .text-danger, span[id*=lbl]").text()
-                if (errMsg.isNotEmpty()) {
-                    android.util.Log.e("PortalAuth", "SERVER ERROR MESSAGE: $errMsg")
-                }
-            } catch (e: Exception) {}
+
 
             // 4. Success Check: verify by opening a protected page with same cookies.
             debugLog("Step 7: Verifying session on protected page...")
@@ -1161,18 +1168,32 @@ class PortalRepository {
             updateCurrentStudentPhotoUrl(parseStudentPhotoUrlFromHtml(verifyHtml, verifyFinalUrl))
 
             if (isSecurityVerificationPage(verifyFinalUrl, verifyHtml)) {
-                debugLog("CAPTCHA/security verification detected on verify page")
+                debugLog("Silent login: protected page security verification detected")
                 return LoginResult.CaptchaRequired
             }
 
             val verifyShowsLogin = isLoginPage(verifyFinalUrl, verifyHtml)
             val hasSessionCookie = hasSessionCookiesForHost(baseHost)
             val verifyLikelyAuthenticated = !verifyShowsLogin && hasSessionCookie
+            
+            if (verifyLikelyAuthenticated) {
+                if (!profileMatchesRequestedUser) {
+                    debugLog("Silent login authenticated successfully, but profile identity could not be independently verified.")
+                }
+            }
 
-            val isSuccess = verifyLikelyAuthenticated && profileMatchesRequestedUser
+            val isSuccess = verifyLikelyAuthenticated
             debugLog("Verify URL: ${sanitizeUrl(verifyFinalUrl)}")
             debugLog("Verify shows login form: $verifyShowsLogin")
             debugLog("Verify has session cookie: $hasSessionCookie")
+            if (isSuccess) {
+                debugLog("Silent login: protected page authenticated")
+            } else {
+                if (!profileMatchesRequestedUser) {
+                    debugLog("Silent login: protected page did not match profile parser")
+                }
+            }
+            
             debugLog("Verify profile matches request: $profileMatchesRequestedUser")
             debugLog("Final result: isSuccess=$isSuccess")
             debugLog("=== LOGIN END ===")

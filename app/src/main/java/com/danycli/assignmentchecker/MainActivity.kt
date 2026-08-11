@@ -776,9 +776,9 @@ fun MainScreen(
 
         // 1. Fetch dashboard data FIRST and sequentially to ensure quick UI response
         //    and prevent ASP.NET session locking/timeout errors from parallel requests.
-        val dashboardData = runCatching { viewModel.loadDashboardData() }.getOrNull()
+        val dashboardData = viewModel.loadDashboardData()
 
-        if (dashboardData != null && (dashboardData.pendingAssignments.isNotEmpty() || dashboardData.historicalAssignments.isNotEmpty())) {
+        if (dashboardData.pendingAssignments.isNotEmpty() || dashboardData.historicalAssignments.isNotEmpty()) {
             assignments = dashboardData.pendingAssignments
             historicalAssignments = dashboardData.historicalAssignments
             loggedInStudentName = viewModel.getCurrentStudentName()

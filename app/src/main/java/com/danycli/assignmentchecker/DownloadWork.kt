@@ -33,37 +33,41 @@ class DownloadWorker(
         DownloadNotifier.showProgress(applicationContext, downloadId, fileName)
 
         val repository = PortalRepository()
+        repository.loadCookiesFromPrefs(applicationContext)
         val credentials = CredentialsStore.get(applicationContext)
             ?: return failDownload(downloadId, fileName, "Missing saved credentials.")
 
-        val (username, password) = credentials
         repository.credentialsProvider = { credentials }
+        repository.persistCookiesCallback = { repository.saveCookiesToPrefs(applicationContext) }
 
         return try {
-            when (repository.login(username, password)) {
-                is LoginResult.Success -> {
-                    when (val downloadResult = repository.downloadAssignment(downloadLink)) {
-                        is DownloadResult.Success -> {
-                            val savedUri = writeBytesToDownloads(applicationContext, downloadResult.fileName, downloadResult.bytes)
-                            if (savedUri != null) {
-                                DownloadQueueStore.updateStatus(applicationContext, downloadId, DownloadQueueStatus.SUCCESS, fileUri = savedUri)
-                                DownloadNotifier.showSuccess(applicationContext, downloadId, fileName)
-                                Result.success()
-                            } else {
-                                failDownload(downloadId, fileName, "Could not save file to Downloads.")
-                            }
-                        }
-                        is DownloadResult.NetworkError -> retryDownload(downloadId, fileName, "Network error during download.")
-                        is DownloadResult.Rejected -> failDownload(downloadId, fileName, downloadResult.reason)
-                        is DownloadResult.Error -> failDownload(downloadId, fileName, downloadResult.message)
+            when (val downloadResult = repository.downloadAssignment(downloadLink)) {
+                is DownloadResult.Success -> {
+                    val savedUri = writeBytesToDownloads(applicationContext, downloadResult.fileName, downloadResult.bytes)
+                    if (savedUri != null) {
+                        DownloadQueueStore.updateStatus(applicationContext, downloadId, DownloadQueueStatus.SUCCESS, fileUri = savedUri)
+                        DownloadNotifier.showSuccess(applicationContext, downloadId, fileName)
+                        Result.success()
+                    } else {
+                        failDownload(downloadId, fileName, "Could not save file to Downloads.")
                     }
                 }
-                is LoginResult.InvalidCredentials -> failDownload(downloadId, fileName, "Session expired. Please log in again.")
-                is LoginResult.CaptchaRequired -> failDownload(downloadId, fileName, "Security verification required in app.")
-                is LoginResult.Error -> retryDownload(downloadId, fileName, "Login failed in background download.")
+                is DownloadResult.NetworkError -> retryDownload(downloadId, fileName, "Network error during download.")
+                is DownloadResult.Rejected -> failDownload(downloadId, fileName, downloadResult.reason)
+                is DownloadResult.Error -> failDownload(downloadId, fileName, downloadResult.message)
             }
         } catch (io: IOException) {
             retryDownload(downloadId, fileName, "Network error.")
+        } catch (e: com.danycli.assignmentchecker.PortalSystemException) {
+            val msg = e.message ?: ""
+            if (msg.contains("AUTHENTICATION_INTERACTION_REQUIRED")) {
+                failDownload(downloadId, fileName, "Security verification required in app.")
+            } else if (msg.contains("Invalid credentials")) {
+                failDownload(downloadId, fileName, "Session expired. Please log in again.")
+            } else {
+                Log.e("DownloadWorker", "Download failed: ${e.message}", e)
+                failDownload(downloadId, fileName, msg)
+            }
         } catch (e: Exception) {
             Log.e("DownloadWorker", "Download failed: ${e.message}", e)
             failDownload(downloadId, fileName, e.message ?: "Unexpected download error.")
