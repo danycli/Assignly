@@ -59,6 +59,11 @@ import com.danycli.assignmentchecker.retryIo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+
 import kotlinx.coroutines.withTimeout
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.io.IOException
@@ -94,6 +99,7 @@ fun AppSplashScreen() {
 @Composable
 fun LoginScreen(
     isLoading: Boolean,
+    portalBaseUrl: String,
     onOpenDisclaimer: () -> Unit,
     onLogin: (String, String, String?) -> Unit
 ) {
@@ -172,7 +178,8 @@ fun LoginScreen(
                                   </body>
                                 </html>
                             """.trimIndent()
-                            loadDataWithBaseURL("https://sis.cuiatd.edu.pk/", htmlData, "text/html", "UTF-8", null)
+                            val baseUrlWithSlash = if (portalBaseUrl.endsWith("/")) portalBaseUrl else "$portalBaseUrl/"
+                            loadDataWithBaseURL(baseUrlWithSlash, htmlData, "text/html", "UTF-8", null)
                         }
                     }
                 )
@@ -480,8 +487,10 @@ fun LoginScreen(
 @Composable
 fun CaptchaWebViewDialog(
     viewModel: MainViewModel,
+    credentials: Pair<String, String>?,
     onDismiss: () -> Unit,
-    onCaptchaSolved: () -> Unit
+    onCaptchaSolved: () -> Unit,
+    isBackgroundRecovery: Boolean = false
 ) {
     val context = LocalContext.current
     val showMessage = LocalShowMessage.current
@@ -589,19 +598,17 @@ fun CaptchaWebViewDialog(
     }
 
     fun scheduleAutoContinueIfReady() {
-        if (hasAutoSubmitted || !challengeEncountered || !clearanceCookieSeen || !challengeLooksSolved || !isPortalHostUrl(currentUrl)) {
-            isCompletingVerification = false
-            return
+        val isSuccessPage = currentUrl.contains("CoursePortal.aspx", ignoreCase = true) || 
+                            currentUrl.contains("Dashboard.aspx", ignoreCase = true) ||
+                            currentUrl.contains("StudentProfile.aspx", ignoreCase = true) ||
+                            currentUrl.contains("Summary.aspx", ignoreCase = true)
+        if (isSuccessPage) {
+            completeCaptchaFlow("Verification completed. Signing in...")
         }
-        completeCaptchaFlow("Verification completed. Signing in...")
     }
 
     fun scheduleNoChallengeContinueIfReady() {
-        if (hasAutoSubmitted || !noChallengeBypassReady || !isPortalHostUrl(currentUrl)) {
-            isCompletingVerification = false
-            return
-        }
-        completeCaptchaFlow(showToast = false)
+        // Redundant, merged into scheduleAutoContinueIfReady
     }
 
     fun dismissVerificationDialog() {
@@ -611,29 +618,79 @@ fun CaptchaWebViewDialog(
         onDismiss()
     }
 
+    fun attemptAutofillIfPossible(view: WebView?, url: String) {
+        if (hasAutoSubmitted || credentials == null) return
+        val normalizedUrl = url.lowercase()
+        val onChallengeEndpoint = normalizedUrl.contains("/cdn-cgi/") || normalizedUrl.contains("challenge-platform")
+        val isSuccessPage = url.contains("CoursePortal.aspx", ignoreCase = true) || 
+                            url.contains("Dashboard.aspx", ignoreCase = true) ||
+                            url.contains("StudentProfile.aspx", ignoreCase = true) ||
+                            url.contains("Summary.aspx", ignoreCase = true)
+        if (isPortalHostUrl(url) && !onChallengeEndpoint && !isSuccessPage && !isLikelyChallenge(url, pageTitle)) {
+            view?.evaluateJavascript("(function() { return document.documentElement.outerHTML; })();") { htmlRaw ->
+                val html = htmlRaw?.let { if (it.length > 2 && it.startsWith("\"") && it.endsWith("\"")) it.substring(1, it.length - 1) else it }
+                    ?.replace("\\u003C", "<")
+                    ?.replace("\\\"", "\"")
+                    ?.replace("\\n", "\n")
+                    ?.replace("\\r", "\r") ?: ""
+                val js = com.danycli.assignmentchecker.auth.AdaptiveLoginEngine.generateAutofillJavascript(html, credentials.first, credentials.second)
+                if (js != null) {
+                    hasAutoSubmitted = true
+                    view.evaluateJavascript(js, null)
+                }
+            }
+        }
+    }
+
     fun shouldFinishBeforePortalPaint(targetUrl: String): Boolean {
-        if (hasAutoSubmitted || targetUrl.isBlank()) return false
-        return challengeEncountered &&
-            isPortalHostUrl(targetUrl) &&
-            !isLikelyChallenge(targetUrl, "")
+        if (targetUrl.isBlank()) return false
+        val isSuccessPage = targetUrl.contains("CoursePortal.aspx", ignoreCase = true) || 
+                            targetUrl.contains("Dashboard.aspx", ignoreCase = true) ||
+                            targetUrl.contains("StudentProfile.aspx", ignoreCase = true) ||
+                            targetUrl.contains("Summary.aspx", ignoreCase = true)
+        return isSuccessPage
     }
 
     LaunchedEffect(Unit) {
-        val captchaStillRequired = isCaptchaStillRequiredBeforeWebView()
-        if (!captchaStillRequired) {
-            onCaptchaSolved()
-            return@LaunchedEffect
-        }
         shouldRenderWebView = true
     }
 
-    Dialog(onDismissRequest = ::dismissVerificationDialog) {
+    var isVisible by remember { mutableStateOf(!isBackgroundRecovery) }
+
+    LaunchedEffect(isBackgroundRecovery) {
+        if (isBackgroundRecovery) {
+            delay(12000)
+            isVisible = true
+        }
+    }
+
+    if (isVisible) {
+        androidx.activity.compose.BackHandler {
+            if (!challengeEncountered) dismissVerificationDialog()
+        }
+    }
+
+    Box(
+        modifier = if (isVisible) Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {}
+            )
+        else Modifier
+            .size(1.dp)
+            .alpha(0.01f),
+        contentAlignment = Alignment.Center
+    ) {
         Card(
             shape = RoundedCornerShape(18.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            modifier = Modifier
-                .fillMaxWidth()
+            modifier = if (isVisible) Modifier
+                .fillMaxWidth(0.95f)
                 .heightIn(min = 460.dp, max = 700.dp)
+            else Modifier.fillMaxSize()
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
                 TopAppBar(
@@ -752,6 +809,7 @@ fun CaptchaWebViewDialog(
                                                 challengeEncountered &&
                                                 clearanceCookieSeen
                                             injectCookiesFromCurrentSession()
+                                            attemptAutofillIfPossible(view, resolvedUrl)
                                             scheduleAutoContinueIfReady()
                                             scheduleNoChallengeContinueIfReady()
                                             super.onPageFinished(view, url)

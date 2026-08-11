@@ -118,11 +118,24 @@ class PortalRepository {
                                     debugLog("executeAuthenticatedRequest: Silent login successful.")
                                 }
                                 is LoginResult.CaptchaRequired -> {
-                                    debugLog("Silent login result: CaptchaRequired")
-                                    throw PortalSystemException("AUTHENTICATION_INTERACTION_REQUIRED")
+                                    debugLog("Silent login result: CaptchaRequired. Triggering foreground recovery.")
+                                    if (com.danycli.assignmentchecker.auth.AuthenticationCoordinator.isForegroundActive()) {
+                                        val success = kotlinx.coroutines.runBlocking {
+                                            com.danycli.assignmentchecker.auth.AuthenticationCoordinator.requestInteraction()
+                                        }
+                                        if (success) {
+                                            lastSilentAuthEpochMs = System.currentTimeMillis()
+                                            persistCookiesCallback?.invoke()
+                                            debugLog("executeAuthenticatedRequest: Foreground interaction succeeded.")
+                                        } else {
+                                            throw PortalSystemException("AUTHENTICATION_INTERACTION_REQUIRED")
+                                        }
+                                    } else {
+                                        throw PortalSystemException("AUTHENTICATION_INTERACTION_REQUIRED")
+                                    }
                                 }
                                 is LoginResult.InvalidCredentials -> {
-                                    debugLog("executeAuthenticatedRequest: Silent login rejected invalid credentials.")
+                                    debugLog("executeAuthenticatedRequest: Silent login rejected explicitly invalid credentials.")
                                     throw PortalSystemException("Invalid credentials")
                                 }
                                 is LoginResult.Error -> {
@@ -775,12 +788,17 @@ class PortalRepository {
     }
 
     private fun isSecurityVerificationResponse(response: Response, url: String, body: String): Boolean {
-        if (body.contains("g-recaptcha") || body.contains("hCaptcha") || body.contains("cf-turnstile") || url.contains("captcha")) {
-            return true
-        }
+        // If it's explicitly the login page, don't fast-fail just because it contains a captcha widget.
+        // We want to at least TRY to submit the credentials, as the captcha might not be enforced (e.g., on Uni WiFi).
+        val isExplicitLoginPage = isLoginPage(url, body) && body.lowercase().contains("password")
+        if (!isExplicitLoginPage) {
+            if (body.contains("g-recaptcha") || body.contains("hCaptcha") || body.contains("cf-turnstile") || url.contains("captcha")) {
+                return true
+            }
 
-        if (isSecurityVerificationPage(url, body)) {
-            return true
+            if (isSecurityVerificationPage(url, body)) {
+                return true
+            }
         }
 
         val statusCodeSignals = response.code == 403 ||
@@ -1205,7 +1223,19 @@ class PortalRepository {
                 
                 val finalShowsLogin = isLoginPage(finalUrl, finalHtml)
                 if (finalShowsLogin) {
-                    LoginResult.InvalidCredentials
+                    val htmlLower = finalHtml.lowercase()
+                    val explicitlyRejected = htmlLower.contains("invalid id or password") || 
+                                             htmlLower.contains("invalid username") ||
+                                             htmlLower.contains("invalid credentials") ||
+                                             htmlLower.contains("incorrect password")
+                    
+                    if (explicitlyRejected) {
+                        debugLog("Silent login explicitly rejected credentials.")
+                        LoginResult.InvalidCredentials
+                    } else {
+                        debugLog("Silent login returned login page without explicit credential error. Assuming clearance/captcha required.")
+                        LoginResult.CaptchaRequired
+                    }
                 } else if (verifyShowsLogin) {
                     LoginResult.Error("Portal session dropped immediately after authentication.")
                 } else {

@@ -435,6 +435,7 @@ fun MainScreen(
     var showCaptchaDialog by remember { mutableStateOf(false) }
     var updateDialogInfo by remember { mutableStateOf<AppUpdateInfo?>(initialUpdateInfo) }
     var pendingExitConfirmation by remember { mutableStateOf(false) }
+    var showRecoveryWebView by remember { mutableStateOf(false) }
     var isPendingRefreshing by remember { mutableStateOf(false) }
     val context = LocalContext.current
     var activeUploads by remember { mutableStateOf<List<QueuedUpload>>(emptyList()) }
@@ -910,6 +911,12 @@ fun MainScreen(
         updateDialogInfo = remoteInfo
     }
 
+    LaunchedEffect(Unit) {
+        com.danycli.assignmentchecker.auth.AuthenticationCoordinator.interactionRequiredFlow.collect {
+            showRecoveryWebView = true
+        }
+    }
+
     LaunchedEffect(appSettings) {
         BackgroundSyncScheduler.applySettings(context, appSettings)
         UploadQueueStore.clearFinished(context)
@@ -1249,6 +1256,7 @@ fun MainScreen(
                     AppPage.LOGIN -> {
                         LoginScreen(
                             isLoading = isLoading,
+                            portalBaseUrl = viewModel.getPortalBaseUrl(),
                             onOpenDisclaimer = { uriHandler.openUri(DISCLAIMER_URL) },
                             onLogin = { user, pass, token ->
                                 loadingTargetScreen = ScreenType.PENDING
@@ -2144,10 +2152,36 @@ fun MainScreen(
         }
     }
 
+    if (showRecoveryWebView) {
+        CaptchaWebViewDialog(
+            viewModel = viewModel,
+            credentials = CredentialsStore.get(context),
+            onDismiss = {
+                showRecoveryWebView = false
+                com.danycli.assignmentchecker.auth.AuthenticationCoordinator.resolveInteraction(false)
+            },
+            onCaptchaSolved = {
+                showRecoveryWebView = false
+                scope.launch {
+                    try {
+                        viewModel.syncWebViewSession(context)
+                        viewModel.saveCookies(context)
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "Failed to sync WebView cookies", e)
+                    }
+                    com.danycli.assignmentchecker.auth.AuthenticationCoordinator.resolveInteraction(true)
+                }
+            },
+            isBackgroundRecovery = true
+        )
+    }
+
     if (showCaptchaDialog) {
         CaptchaWebViewDialog(
             viewModel = viewModel,
+            credentials = pendingCaptchaCredentials,
             onDismiss = { showCaptchaDialog = false },
+            isBackgroundRecovery = true,
             onCaptchaSolved = {
                 showCaptchaDialog = false
                 val creds = pendingCaptchaCredentials
@@ -2156,12 +2190,29 @@ fun MainScreen(
                     isLoading = true
                     scope.launch {
                         try {
-                            attemptPortalLogin(
-                                usernameInput = creds.first,
-                                passwordInput = creds.second,
-                                saveCredentialsOnSuccess = true,
-                                isAutoLogin = false
-                            )
+                            viewModel.syncWebViewSession(context)
+                            isLoggedIn = true
+                            CredentialsStore.save(context, creds.first, creds.second)
+                            viewModel.saveCookies(context)
+                            val settings = AppSettingsStore.get(context)
+                            if (settings.rememberRegistrationNumber) {
+                                RegistrationHistoryStore.saveRegistration(context, creds.first)
+                            }
+                            launch { checkForAppUpdateIfNeeded() }
+                            
+                            isPendingRefreshing = true
+                            try {
+                                refreshAssignmentsState()
+                            } catch (e: Exception) {
+                                Log.e("MainActivity", "Error fetching data after captcha solved", e)
+                                showAppMessage("Security verification succeeded, but failed to load data.")
+                                isLoggedIn = false
+                            } finally {
+                                isPendingRefreshing = false
+                            }
+                        } catch (e: Exception) {
+                            Log.e("MainActivity", "Error completing login flow after captcha", e)
+                            showAppMessage("Verification succeeded but encountered a setup error.")
                         } finally {
                             isLoading = false
                         }
